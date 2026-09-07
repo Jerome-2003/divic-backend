@@ -2,7 +2,10 @@ const mongoose = require("mongoose");
 
 const paymentSchema = new mongoose.Schema(
   {
-    booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", required: true, index: true },
+    // Optional: a facility charge settled on the spot by a walk-in customer is
+    // a payment with no folio behind it. Every folio aggregation therefore has
+    // to filter these out rather than assume a booking is present.
+    booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", index: true },
     location: { type: String, enum: ["exclusive", "urban"], required: true, index: true },
     amount: { type: Number, required: true, min: 1 },
     method: { type: String, enum: ["paystack", "transfer", "cash", "pos"], required: true },
@@ -13,6 +16,9 @@ const paymentSchema = new mongoose.Schema(
     verified: { type: Boolean, default: false },
     verifiedAt: Date,
     gatewayResponse: mongoose.Schema.Types.Mixed,
+
+    // Set when this payment came off a facility till rather than the front desk.
+    facility: { type: mongoose.Schema.Types.ObjectId, ref: "Facility", index: true, sparse: true },
 
     note: String,
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

@@ -4,7 +4,9 @@ const mongoose = require("mongoose");
 // should be discoverable and replayable, not lost in a scrolling log.
 const failedWriteSchema = new mongoose.Schema(
   {
-    collection: { type: String, required: true },
+    // Named collectionName, not collection: `collection` is a reserved Mongoose
+    // schema pathname and warns on every boot.
+    collectionName: { type: String, required: true },
     location: String,
     operation: mongoose.Schema.Types.Mixed,   // the payload, kept for replay
     error: String,
