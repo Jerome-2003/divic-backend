@@ -4,29 +4,77 @@ const Booking = require("../models/Booking");
 const { requireAuth, requireModule, requireRole, scopeLocation } = require("../middleware/auth");
 const { verifyTransaction, initializeTransaction } = require("../services/paystack");
 const { logAction } = require("../services/audit");
+const { foliosFor, facilityChargeLines } = require("../services/folio");
 
 router.use(requireAuth, requireModule("billing"));
 
-/** Folios: every booking with what is charged, paid and owing. */
+/**
+ * Folios: every booking with what is charged, paid and owing. Room charges and
+ * facility charges are broken out separately so a guest can see what came from
+ * the bar — the arithmetic itself lives in services/folio.js.
+ */
 router.get("/folios", scopeLocation, async (req, res, next) => {
   try {
     const bookings = await Booking.find({ location: req.location, status: { $ne: "cancelled" } })
       .populate("guest", "name phone").sort({ checkIn: -1 }).limit(300).lean();
 
-    const paid = await Payment.aggregate([
-      { $match: { location: req.location, voided: false } },
-      { $group: { _id: "$booking", total: { $sum: "$amount" } } },
-    ]);
-    const paidBy = Object.fromEntries(paid.map((p) => [String(p._id), p.total]));
+    const folios = await foliosFor(bookings);
 
-    res.json(bookings.map((b) => ({
-      bookingId: b._id, ref: b.ref, guest: b.guest?.name, phone: b.guest?.phone,
-      roomNumber: b.roomNumber, roomType: b.roomType, status: b.status,
-      checkIn: b.checkIn, checkOut: b.checkOut, nights: b.nights, rate: b.rate,
-      charges: b.totalCharge,
-      paid: paidBy[String(b._id)] || 0,
-      balance: b.totalCharge - (paidBy[String(b._id)] || 0),
-    })));
+    res.json(bookings.map((b) => {
+      const f = folios[String(b._id)];
+      return {
+        bookingId: b._id, ref: b.ref, guest: b.guest?.name, phone: b.guest?.phone,
+        roomNumber: b.roomNumber, roomType: b.roomType, status: b.status,
+        checkIn: b.checkIn, checkOut: b.checkOut, nights: b.nights, rate: b.rate,
+        roomCharges: f.roomCharges,
+        facilityCharges: f.facilityCharges,
+        charges: f.totalCharges,
+        paid: f.paid,
+        balance: f.balance,
+      };
+    }));
+  } catch (e) { next(e); }
+});
+
+/**
+ * GET /api/payments/folio/:bookingId — one guest's bill, itemised. The room
+ * line plus every facility charge sitting on the room, so the front desk can
+ * answer "what is this 12,000 for?" without leaving the billing screen.
+ */
+router.get("/folio/:bookingId", async (req, res, next) => {
+  try {
+    const booking = await Booking.findById(req.params.bookingId).populate("guest", "name phone").lean();
+    if (!booking) return res.status(404).json({ error: "That booking does not exist." });
+    if (req.user.location !== "all" && booking.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
+
+    const [folios, lines, payments] = await Promise.all([
+      foliosFor([booking]),
+      facilityChargeLines(booking._id),
+      Payment.find({ booking: booking._id, voided: false }).populate("recordedBy", "name").sort({ createdAt: -1 }).lean(),
+    ]);
+    const f = folios[String(booking._id)];
+
+    res.json({
+      bookingId: booking._id, ref: booking.ref, guest: booking.guest?.name,
+      roomNumber: booking.roomNumber, roomType: booking.roomType, status: booking.status,
+      checkIn: booking.checkIn, checkOut: booking.checkOut, nights: booking.nights, rate: booking.rate,
+      currency: "NGN",
+      roomCharges: f.roomCharges,
+      facilityCharges: f.facilityCharges,
+      totalCharges: f.totalCharges,
+      paid: f.paid,
+      balance: f.balance,
+      facilityLines: lines.map((c) => ({
+        id: c._id, facility: c.facility?.name, facilityType: c.facility?.type,
+        description: c.description, amount: c.amount, postedAt: c.createdAt,
+      })),
+      payments: payments.map((p) => ({
+        id: p._id, amount: p.amount, method: p.method, verified: p.verified,
+        note: p.note || null, recordedBy: p.recordedBy?.name || null, at: p.createdAt,
+      })),
+    });
   } catch (e) { next(e); }
 });
 

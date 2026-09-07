@@ -1,14 +1,17 @@
 /**
- * Seeds the two properties, their rooms, rates and a starting owner account.
- * Safe to re-run: rooms are upserted, and existing users are left alone.
+ * Seeds the two properties, their rooms, facilities, rates and a starting owner
+ * account. Safe to re-run: rooms and facilities are upserted, a facility's
+ * status is only set when it is first created, and existing users are left
+ * alone.
  *
  *   npm run seed
  */
 require("dotenv").config();
 
 const { connectDB } = require("../config/db");
-const { LOCATIONS, ROOM_PLAN } = require("./constants");
+const { LOCATIONS, ROOM_PLAN, FACILITY_PLAN } = require("./constants");
 const Room = require("../models/Room");
+const Facility = require("../models/Facility");
 const Rate = require("../models/Rate");
 const User = require("../models/User");
 const mongoose = require("mongoose");
@@ -32,6 +35,21 @@ async function run() {
       { $setOnInsert: { prices: LOCATIONS[location].rates } },
       { upsert: true }
     );
+
+    // Status is $setOnInsert only: re-running the seed must never reopen a
+    // facility a manager has closed, and must not wipe their status note.
+    for (const f of FACILITY_PLAN[location] || []) {
+      await Facility.updateOne(
+        { location, slug: f.slug },
+        {
+          $set: { name: f.name, type: f.type, sellsItems: f.sellsItems, openingHours: f.openingHours },
+          $setOnInsert: { status: "open" },
+        },
+        { upsert: true }
+      );
+    }
+    const facilityCount = await Facility.countDocuments({ location });
+    console.log("[seed] " + LOCATIONS[location].name + ": " + facilityCount + " facilities");
   }
 
   const ownerExists = await User.findOne({ role: "owner" });

@@ -4,10 +4,10 @@ const Booking = require("../models/Booking");
 const Room = require("../models/Room");
 const Guest = require("../models/Guest");
 const Rate = require("../models/Rate");
-const Payment = require("../models/Payment");
 const { requireAuth, requireModule, scopeLocation } = require("../middleware/auth");
 const { isRoomAvailable, validRange, nightsBetween } = require("../services/availability");
 const { logAction } = require("../services/audit");
+const { foliosFor, folioFor } = require("../services/folio");
 const { LOCATIONS } = require("../utils/constants");
 
 router.use(requireAuth, requireModule("bookings"));
@@ -44,17 +44,21 @@ router.get("/", scopeLocation, async (req, res, next) => {
           .toLowerCase().includes(needle));
     }
 
-    const paid = await Payment.aggregate([
-      { $match: { booking: { $in: bookings.map((b) => b._id) }, voided: false } },
-      { $group: { _id: "$booking", total: { $sum: "$amount" } } },
-    ]);
-    const paidBy = Object.fromEntries(paid.map((p) => [String(p._id), p.total]));
+    // The balance is the room plus anything charged to it at a facility, less
+    // what has been paid — see services/folio.js.
+    const folios = await foliosFor(bookings);
 
-    res.json(bookings.map((b) => ({
-      ...b,
-      paid: paidBy[String(b._id)] || 0,
-      balance: b.totalCharge - (paidBy[String(b._id)] || 0),
-    })));
+    res.json(bookings.map((b) => {
+      const f = folios[String(b._id)];
+      return {
+        ...b,
+        roomCharges: f.roomCharges,
+        facilityCharges: f.facilityCharges,
+        totalCharges: f.totalCharges,
+        paid: f.paid,
+        balance: f.balance,
+      };
+    }));
   } catch (e) { next(e); }
 });
 
@@ -163,16 +167,17 @@ router.post("/:id/check-out", async (req, res, next) => {
       return res.status(409).json({ error: "Only a guest who is in house can be checked out." });
     }
 
-    const paidRows = await Payment.aggregate([
-      { $match: { booking: booking._id, voided: false } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-    const paid = paidRows[0]?.total || 0;
-    const balance = booking.totalCharge - paid;
+    // An unpaid bar tab is as much of a balance as an unpaid room, so the guard
+    // has to look at the whole folio, not just Booking.totalCharge.
+    const folio = await folioFor(booking);
+    const balance = folio.balance;
     if (balance > 0 && !req.body.allowUnpaid) {
       return res.status(409).json({
         error: "This folio still has an outstanding balance.",
         balance,
+        roomCharges: folio.roomCharges,
+        facilityCharges: folio.facilityCharges,
+        paid: folio.paid,
         hint: "Take the payment first, or send allowUnpaid to check out with the balance owing.",
       });
     }
@@ -190,7 +195,7 @@ router.post("/:id/check-out", async (req, res, next) => {
       entity: "Booking", entityId: booking._id, location: booking.location,
     });
     req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);
-    res.json({ booking, balance });
+    res.json({ booking, balance, folio });
   } catch (e) { next(e); }
 });
 
