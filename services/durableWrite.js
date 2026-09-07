@@ -24,7 +24,7 @@ async function durableWrite(collectionName, location, operation, attemptFn) {
 
   try {
     await FailedWrite.create({
-      collection: collectionName,
+      collectionName,
       location,
       operation,
       error: String(lastErr && lastErr.message ? lastErr.message : lastErr),

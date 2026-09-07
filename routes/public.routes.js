@@ -2,6 +2,7 @@ const router = require("express").Router();
 const rateLimit = require("express-rate-limit");
 const BookingRequest = require("../models/BookingRequest");
 const Rate = require("../models/Rate");
+const Facility = require("../models/Facility");
 const { availabilityByType, validRange, nightsBetween } = require("../services/availability");
 const { LOCATIONS, ROOM_PLAN } = require("../utils/constants");
 const { verifyTransaction } = require("../services/paystack");
@@ -31,6 +32,18 @@ router.get("/properties", async (_req, res, next) => {
     const rateDocs = await Rate.find().lean();
     const rateBy = Object.fromEntries(rateDocs.map((d) => [d.location, Object.fromEntries(Object.entries(d.prices))]));
 
+    // Only open facilities are published. The public site has no business
+    // telling a prospective guest the gym is under maintenance, and the status
+    // note is an internal message ("Pump being serviced") that never ships.
+    const facilities = await Facility.find({ status: "open" })
+      .select("location name slug type openingHours").sort({ type: 1, name: 1 }).lean();
+    const facilitiesBy = facilities.reduce((a, f) => {
+      (a[f.location] = a[f.location] || []).push({
+        name: f.name, slug: f.slug, type: f.type, openingHours: f.openingHours || null,
+      });
+      return a;
+    }, {});
+
     res.json(Object.values(LOCATIONS).map((l) => {
       const plan = ROOM_PLAN[l.id];
       const types = l.typeOrder.map((type) => ({
@@ -42,6 +55,7 @@ router.get("/properties", async (_req, res, next) => {
       return {
         id: l.id, name: l.name, address: l.address, phone: l.phone,
         totalRooms: plan.length, currency: "NGN", roomTypes: types,
+        facilities: facilitiesBy[l.id] || [],
       };
     }));
   } catch (e) { next(e); }

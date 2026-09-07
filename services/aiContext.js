@@ -9,12 +9,14 @@
 
 const Booking = require("../models/Booking");
 const Room = require("../models/Room");
-const Payment = require("../models/Payment");
+const Facility = require("../models/Facility");
+const Charge = require("../models/Charge");
 const Guest = require("../models/Guest");
 const BookingRequest = require("../models/BookingRequest");
 const Rate = require("../models/Rate");
 const { LOCATIONS } = require("../utils/constants");
 const { findAvailableRooms, nightsBetween } = require("./availability");
+const { foliosFor } = require("./folio");
 
 const today = () => new Date().toISOString().slice(0, 10);
 const shift = (iso, n) => {
@@ -39,14 +41,17 @@ async function operationsSnapshot(location) {
     Booking.find({ location, status: "in-house", checkOut: { $lte: t } }).populate("guest", "name").lean(),
   ]);
 
-  const paid = await Payment.aggregate([
-    { $match: { location, voided: false } },
-    { $group: { _id: "$booking", total: { $sum: "$amount" } } },
-  ]);
-  const paidBy = Object.fromEntries(paid.map((p) => [String(p._id), p.total]));
+  // Room and facility charges both count — a bar tab is a balance.
+  const folios = await foliosFor(departing);
 
   const owing = departing
-    .map((b) => ({ guest: b.guest?.name, room: b.roomNumber, balance: b.totalCharge - (paidBy[String(b._id)] || 0) }))
+    .map((b) => {
+      const f = folios[String(b._id)];
+      return {
+        guest: b.guest?.name, room: b.roomNumber,
+        roomCharges: f.roomCharges, facilityCharges: f.facilityCharges, balance: f.balance,
+      };
+    })
     .filter((x) => x.balance > 0);
 
   const byStatus = rooms.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
@@ -83,25 +88,57 @@ async function housekeepingSnapshot(location) {
 async function outstandingBalances(location) {
   const open = await Booking.find({ location, status: { $in: ["confirmed", "in-house"] } })
     .populate("guest", "name").lean();
-  const paid = await Payment.aggregate([
-    { $match: { location, voided: false } },
-    { $group: { _id: "$booking", total: { $sum: "$amount" } } },
-  ]);
-  const paidBy = Object.fromEntries(paid.map((p) => [String(p._id), p.total]));
+  const folios = await foliosFor(open);
 
-  const rows = open.map((b) => ({
-    guest: b.guest?.name, room: b.roomNumber, ref: b.ref,
-    checkOut: b.checkOut, charges: b.totalCharge,
-    paid: paidBy[String(b._id)] || 0,
-    balance: b.totalCharge - (paidBy[String(b._id)] || 0),
-  })).filter((r) => r.balance > 0).sort((a, b) => b.balance - a.balance);
+  const rows = open.map((b) => {
+    const f = folios[String(b._id)];
+    return {
+      guest: b.guest?.name, room: b.roomNumber, ref: b.ref,
+      checkOut: b.checkOut,
+      roomCharges: f.roomCharges,
+      facilityCharges: f.facilityCharges,
+      charges: f.totalCharges,
+      paid: f.paid,
+      balance: f.balance,
+    };
+  }).filter((r) => r.balance > 0).sort((a, b) => b.balance - a.balance);
 
   return {
     property: LOCATIONS[location].name,
     today: today(),
     currency: "NGN",
     totalOutstanding: rows.reduce((s, r) => s + r.balance, 0),
+    totalFacilityCharges: rows.reduce((s, r) => s + r.facilityCharges, 0),
+    note: "Charges are the room plus anything charged to the room at a bar, restaurant or pool.",
     guests: rows,
+  };
+}
+
+/** Facility takings over a period. Never mixed into ADR or RevPAR. */
+async function facilityRevenue(location, from) {
+  const rows = await Charge.aggregate([
+    { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
+    { $group: {
+        _id: { facility: "$facility", settlement: "$settlement" },
+        total: { $sum: "$amount" }, count: { $sum: 1 },
+    } },
+  ]);
+  const facilities = await Facility.find({ location }).select("name type").lean();
+  const nameBy = Object.fromEntries(facilities.map((f) => [String(f._id), f]));
+
+  const byFacility = {};
+  rows.forEach((r) => {
+    const f = nameBy[String(r._id.facility)];
+    const key = f ? f.name : "Unknown facility";
+    byFacility[key] = byFacility[key] || { type: f?.type, chargedToRooms: 0, paidAtTill: 0, total: 0, charges: 0 };
+    byFacility[key][r._id.settlement === "room" ? "chargedToRooms" : "paidAtTill"] += r.total;
+    byFacility[key].total += r.total;
+    byFacility[key].charges += r.count;
+  });
+
+  return {
+    total: Object.values(byFacility).reduce((s, v) => s + v.total, 0),
+    byFacility,
   };
 }
 
@@ -140,6 +177,10 @@ async function revenueSummary(location) {
     revPAR: available ? Math.round(revenue / available) : 0,
     totalRoomRevenue: revenue,
     byRoomType: byType,
+    // Kept separate from the room metrics on purpose. ADR and RevPAR mean
+    // revenue per room night sold and per available room; folding bar takings
+    // into them makes the numbers meaningless.
+    facilityRevenue: await facilityRevenue(location, from),
     currentRates: await ratesFor(location),
   };
 }

@@ -42,17 +42,43 @@ const ROOM_PLAN = {
   ],
 };
 
-const ROLES = ["receptionist", "cleaner", "manager", "owner"];
+// The two properties' facilities. `sellsItems` is what decides whether a
+// facility can post charges at all — a gym attendant is never shown a till.
+const FACILITY_TYPES = ["pool", "bar", "gym", "restaurant"];
+const FACILITY_STATUSES = ["open", "closed", "maintenance"];
+
+const FACILITY_PLAN = {
+  exclusive: [
+    { name: "Pool", slug: "pool", type: "pool", sellsItems: false, openingHours: "7am \u2013 9pm" },
+    { name: "Indoor bar", slug: "indoor-bar", type: "bar", sellsItems: true, openingHours: "12pm \u2013 12am" },
+    { name: "Outdoor bar", slug: "outdoor-bar", type: "bar", sellsItems: true, openingHours: "4pm \u2013 12am" },
+  ],
+  urban: [
+    { name: "Indoor pool", slug: "indoor-pool", type: "pool", sellsItems: false, openingHours: "6am \u2013 10pm" },
+    { name: "Bar", slug: "bar", type: "bar", sellsItems: true, openingHours: "12pm \u2013 12am" },
+    { name: "Gym", slug: "gym", type: "gym", sellsItems: false, openingHours: "6am \u2013 10pm" },
+    { name: "Restaurant", slug: "restaurant", type: "restaurant", sellsItems: true, openingHours: "7am \u2013 10pm" },
+  ],
+};
+
+const ROLES = ["receptionist", "cleaner", "manager", "facility", "owner"];
 const ROOM_STATUSES = ["available", "occupied", "dirty", "cleaning", "maintenance"];
 const BOOKING_STATUSES = ["confirmed", "in-house", "checked-out", "cancelled", "no-show"];
+const CHARGE_SETTLEMENTS = ["room", "paid"];
 
 // What each role may reach. Enforced server-side on every route — the frontend
 // copy of this map is convenience, not security.
 const PERMISSIONS = {
-  owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","analytics","rates","staff","audit","ai"],
-  manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","analytics","rates","staff","audit","ai"],
+  owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai"],
+  manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai"],
   receptionist: ["dashboard","bookings","frontdesk","rooms","guests","billing","ai"],
   cleaner:      ["rooms"],
+  // Bartenders, restaurant and pool staff. Their facilities and their till,
+  // nothing else — no dashboard, no bookings, no guests list, no assistant.
+  facility:     ["facilities","pos"],
 };
 
-module.exports = { LOCATIONS, ROOM_PLAN, ROLES, ROOM_STATUSES, BOOKING_STATUSES, PERMISSIONS };
+module.exports = {
+  LOCATIONS, ROOM_PLAN, FACILITY_PLAN, FACILITY_TYPES, FACILITY_STATUSES,
+  ROLES, ROOM_STATUSES, BOOKING_STATUSES, CHARGE_SETTLEMENTS, PERMISSIONS,
+};

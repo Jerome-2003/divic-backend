@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const Facility = require("../models/Facility");
 const { PERMISSIONS } = require("../utils/constants");
 
 async function requireAuth(req, res, next) {
@@ -16,6 +17,7 @@ async function requireAuth(req, res, next) {
     req.user = {
       id: String(user._id), name: user.name, role: user.role,
       location: user.location, username: user.username,
+      assignedFacilities: (user.assignedFacilities || []).map(String),
     };
     next();
   } catch {
@@ -61,4 +63,27 @@ function scopeLocation(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireModule, requireRole, scopeLocation };
+/**
+ * Facility scoping. Loads the facility named by a route parameter (":facilityId"
+ * by default) and pins it on req.facility, then checks the signed-in user may
+ * work there. Managers and owners pass automatically, subject to the same
+ * property scoping as everywhere else; a facility user must have the facility
+ * in their assignedFacilities or they get a 403.
+ */
+const requireAssignedFacility = (param = "facilityId") => async (req, res, next) => {
+  try {
+    const facility = await Facility.findById(req.params[param]);
+    if (!facility) return res.status(404).json({ error: "That facility does not exist." });
+    if (req.user.location !== "all" && facility.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
+    if (req.user.role === "facility" && !req.user.assignedFacilities.includes(String(facility._id))) {
+      return res.status(403).json({ error: "You are not assigned to " + facility.name + "." });
+    }
+    req.facility = facility;
+    req.location = facility.location;
+    next();
+  } catch (e) { next(e); }
+};
+
+module.exports = { requireAuth, requireModule, requireRole, scopeLocation, requireAssignedFacility };

@@ -1,10 +1,42 @@
 const router = require("express").Router();
 const User = require("../models/User");
+const Facility = require("../models/Facility");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { logAction } = require("../services/audit");
 const { ROLES } = require("../utils/constants");
 
 router.use(requireAuth, requireRole("manager", "owner"));
+
+/**
+ * Resolves the facilities a user is being assigned to and checks every one of
+ * them sits at that user's own property. A Divic Urban bartender must never be
+ * assignable to a Divic Exclusive bar, so this returns an error string rather
+ * than silently dropping the ones that do not belong.
+ */
+async function resolveAssignedFacilities(ids, location) {
+  if (!Array.isArray(ids)) {
+    return { error: "Send the assigned facilities as a list." };
+  }
+  const wanted = [...new Set(ids.map(String))];
+  if (!wanted.length) return { ids: [] };
+  if (!["exclusive", "urban"].includes(location)) {
+    return { error: "Give this person a property before assigning them facilities." };
+  }
+  let found;
+  try {
+    found = await Facility.find({ _id: { $in: wanted } }).select("location name").lean();
+  } catch {
+    return { error: "One of those facilities is not a valid record." };
+  }
+  if (found.length !== wanted.length) {
+    return { error: "One of those facilities does not exist." };
+  }
+  const wrong = found.find((f) => f.location !== location);
+  if (wrong) {
+    return { error: wrong.name + " is at the other property and cannot be assigned to this person." };
+  }
+  return { ids: found.map((f) => f._id) };
+}
 
 router.get("/", async (req, res, next) => {
   try {
@@ -17,21 +49,34 @@ router.get("/", async (req, res, next) => {
 
 router.post("/", async (req, res, next) => {
   try {
-    const { name, username, password, role, location, phone } = req.body;
+    const { name, username, password, role, location, phone, assignedFacilities } = req.body;
     if (!name || !username || !password) {
       return res.status(400).json({ error: "A new account needs a name, username and starting password." });
     }
     if (!ROLES.includes(role)) return res.status(400).json({ error: "Choose a valid role." });
     if (password.length < 8) return res.status(400).json({ error: "The starting password needs at least 8 characters." });
-    // Only an owner can mint managers or other owners.
-    if (req.user.role === "manager" && !["receptionist", "cleaner"].includes(role)) {
+    // Only an owner can mint managers or other owners. Facility staff are a
+    // manager's to create.
+    if (req.user.role === "manager" && !["receptionist", "cleaner", "facility"].includes(role)) {
       return res.status(403).json({ error: "Only the owner can create manager or owner accounts." });
     }
     if (location === "all" && !["manager", "owner"].includes(role)) {
       return res.status(400).json({ error: "Only managers and owners can cover both properties." });
     }
 
-    const user = new User({ name, username: username.toLowerCase().trim(), role, location, phone });
+    let assigned = [];
+    if (role === "facility") {
+      const check = await resolveAssignedFacilities(assignedFacilities || [], location);
+      if (check.error) return res.status(400).json({ error: check.error });
+      assigned = check.ids;
+    } else if (assignedFacilities && assignedFacilities.length) {
+      return res.status(400).json({ error: "Only facility staff can be assigned to facilities." });
+    }
+
+    const user = new User({
+      name, username: username.toLowerCase().trim(), role, location, phone,
+      assignedFacilities: assigned,
+    });
     await user.setPassword(password);
     await user.save();
 
@@ -48,16 +93,39 @@ router.patch("/:id", async (req, res, next) => {
       return res.status(403).json({ error: "Only the owner can change an owner account." });
     }
 
-    const { name, role, location, phone, password, active } = req.body;
+    const { name, role, location, phone, password, active, assignedFacilities } = req.body;
     if (name) user.name = name;
     if (phone !== undefined) user.phone = phone;
     if (role) {
-      if (req.user.role === "manager" && !["receptionist", "cleaner"].includes(role)) {
+      if (req.user.role === "manager" && !["receptionist", "cleaner", "facility"].includes(role)) {
         return res.status(403).json({ error: "Only the owner can assign manager or owner roles." });
       }
       user.role = role;
     }
     if (location) user.location = location;
+
+    // Validate the assignment against whatever role and property the account
+    // ends up with, not the ones it had when the request arrived.
+    if (user.role === "facility") {
+      if (user.location === "all") {
+        return res.status(400).json({ error: "Facility staff work at one property, not both." });
+      }
+      if (assignedFacilities !== undefined || location) {
+        const check = await resolveAssignedFacilities(
+          assignedFacilities !== undefined ? assignedFacilities : user.assignedFacilities.map(String),
+          user.location
+        );
+        if (check.error) return res.status(400).json({ error: check.error });
+        user.assignedFacilities = check.ids;
+      }
+    } else {
+      // Moving somebody off the facility role drops their tills with it.
+      if (assignedFacilities && assignedFacilities.length) {
+        return res.status(400).json({ error: "Only facility staff can be assigned to facilities." });
+      }
+      user.assignedFacilities = [];
+    }
+
     if (active !== undefined) {
       if (String(user._id) === req.user.id) {
         return res.status(400).json({ error: "You cannot deactivate your own account." });
