@@ -1,5 +1,10 @@
 require("dotenv").config();
 
+const dns = require("dns");
+// Windows can hand Node a resolver from a stale or virtual network adapter,
+// which refuses the SRV lookup that mongodb+srv:// depends on.
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
 const express = require("express");
 const cors = require("cors");
 const http = require("http");

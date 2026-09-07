@@ -1,6 +1,13 @@
 // Single source of truth for the two properties. The frontend imports the same
 // numbers from its own copy in src/lib/constants.js — keep them in step.
 
+const mongoose = require("mongoose");
+const dns = require("dns");
+
+// Windows can hand Node a resolver from a stale or virtual network adapter,
+// which refuses the SRV lookup that mongodb+srv:// depends on.
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
 const LOCATIONS = {
   exclusive: {
     id: "exclusive",

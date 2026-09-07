@@ -5,6 +5,7 @@
  *   npm run seed
  */
 require("dotenv").config();
+
 const { connectDB } = require("../config/db");
 const { LOCATIONS, ROOM_PLAN } = require("./constants");
 const Room = require("../models/Room");
