@@ -42,6 +42,27 @@ router.patch("/:id/status", requireModule("rooms"), async (req, res, next) => {
     if (req.user.role === "cleaner" && !["cleaning", "available", "dirty"].includes(status)) {
       return res.status(403).json({ error: "Housekeeping can set a room to being cleaned, clean, or needs cleaning." });
     }
+
+    // Cycling a room through dirty -> cleaning -> available is housekeeping's
+    // routine work, done many times a day by a cleaner (or a receptionist
+    // covering it). Marking a room out of order is a moderation decision and
+    // stays exactly as it was. So only the cycle statuses need an override
+    // from an owner or manager doing it themselves.
+    const isCycleStatus = ["dirty", "cleaning", "available"].includes(status);
+    const isOperationalRole = ["cleaner", "receptionist"].includes(req.user.role);
+    if (isCycleStatus && !isOperationalRole && ["owner", "manager"].includes(req.user.role)) {
+      if (req.body.override !== true) {
+        return res.status(403).json({
+          error: "This is normally done by housekeeping. Use the override option if you need to do it yourself right now.",
+          requiresOverride: true,
+        });
+      }
+      if (!req.body.overrideReason || !req.body.overrideReason.trim()) {
+        return res.status(400).json({ error: "Give a short reason for the override." });
+      }
+      req.isOverride = true;
+    }
+
     const before = room.status;
     room.status = status;
     if (note !== undefined) room.statusNote = note;
@@ -49,7 +70,10 @@ router.patch("/:id/status", requireModule("rooms"), async (req, res, next) => {
     await room.save();
 
     logAction(req, {
-      action: "Set room " + room.number + " to " + status, entity: "Room",
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Set room " + room.number + " to " + status +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
+      entity: "Room",
       entityId: room._id, location: room.location, before: { status: before }, after: { status },
     });
     res.json(room);

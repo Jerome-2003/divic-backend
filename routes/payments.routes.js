@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const Payment = require("../models/Payment");
 const Booking = require("../models/Booking");
-const { requireAuth, requireModule, requireRole, scopeLocation } = require("../middleware/auth");
+const { requireAuth, requireModule, requireRole, requireOperational, scopeLocation } = require("../middleware/auth");
 const { verifyTransaction, initializeTransaction } = require("../services/paystack");
 const { logAction } = require("../services/audit");
 const { foliosFor, facilityChargeLines } = require("../services/folio");
@@ -123,7 +123,7 @@ router.post("/paystack/initialize", async (req, res, next) => {
  * before anything lands on the folio — a client-side success callback is not
  * proof of payment.
  */
-router.post("/", scopeLocation, async (req, res, next) => {
+router.post("/", scopeLocation, requireOperational("receptionist", "facility"), async (req, res, next) => {
   try {
     const { bookingId, amount, method, paystackReference, note } = req.body;
     const booking = await Booking.findById(bookingId).populate("guest", "name");
@@ -155,7 +155,9 @@ router.post("/", scopeLocation, async (req, res, next) => {
     });
 
     logAction(req, {
-      action: "Recorded " + amount + " naira by " + method + " on " + booking.ref,
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Recorded " + amount + " naira by " + method + " on " + booking.ref +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
       entity: "Payment", entityId: payment._id, location: booking.location,
     });
     req.app.get("io")?.to("loc:" + booking.location).emit("payment:recorded", { bookingId: booking._id, amount });

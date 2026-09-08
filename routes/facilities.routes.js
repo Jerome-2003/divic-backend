@@ -4,7 +4,7 @@ const Charge = require("../models/Charge");
 const Payment = require("../models/Payment");
 const Booking = require("../models/Booking");
 const {
-  requireAuth, requireModule, requireRole, scopeLocation, requireAssignedFacility,
+  requireAuth, requireModule, requireRole, requireOperational, scopeLocation, requireAssignedFacility,
 } = require("../middleware/auth");
 const { logAction } = require("../services/audit");
 const { FACILITY_STATUSES, CHARGE_SETTLEMENTS } = require("../utils/constants");
@@ -123,7 +123,7 @@ const chargeJSON = (c, facility) => ({
  * Both are supported; everything about which is allowed is decided here, never
  * by the client.
  */
-router.post("/:facilityId/charges", requireModule("pos"), requireAssignedFacility(), async (req, res, next) => {
+router.post("/:facilityId/charges", requireModule("pos"), requireAssignedFacility(), requireOperational("facility"), async (req, res, next) => {
   try {
     const facility = req.facility;
     if (!facility.sellsItems) {
@@ -191,8 +191,10 @@ router.post("/:facilityId/charges", requireModule("pos"), requireAssignedFacilit
     });
 
     logAction(req, {
-      action: "Posted " + amount + " naira at " + facility.name + " — " + description +
-        (booking ? " to room " + booking.roomNumber : " paid at the till"),
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Posted " + amount + " naira at " + facility.name + " — " + description +
+        (booking ? " to room " + booking.roomNumber : " paid at the till") +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
       entity: "Charge", entityId: charge._id, location: facility.location,
       after: charge.toObject(),
     });

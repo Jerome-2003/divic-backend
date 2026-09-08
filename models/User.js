@@ -13,7 +13,7 @@ const userSchema = new mongoose.Schema(
     location: { type: String, enum: ["exclusive", "urban", "all"], required: true },
 
     // Which facilities a facility user covers. One bartender might cover the
-    // indoor and outdoor bars at Divic Exclusive; another only the restaurant
+    // indoor and outdoor bars at Divic 1; another only the restaurant
     // at Divic Urban. Every entry must sit at the user's own property —
     // enforced in routes/staff.routes.js.
     assignedFacilities: [{ type: mongoose.Schema.Types.ObjectId, ref: "Facility" }],

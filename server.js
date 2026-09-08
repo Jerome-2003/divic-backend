@@ -42,7 +42,7 @@ app.use(express.json({ limit: "200kb" }));
 app.set("trust proxy", 1);
 
 // Real-time sync. Staff join a room per property so a change at Divic Urban
-// never appears on a screen at Divic Exclusive.
+// never appears on a screen at Divic 1.
 const io = new Server(server, { cors: { origin: allowedOrigins, credentials: true } });
 io.on("connection", (socket) => {
   socket.on("join", (location) => {

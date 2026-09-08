@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node utils/seed.js",
-    "test": "node test/integration.test.js"
+    "test": "node test/integration.test.js && node test/override-and-media.test.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

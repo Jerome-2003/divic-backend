@@ -20,7 +20,12 @@ function badHref(href) {
   return "Links must be a path starting with / or a full https:// address.";
 }
 
-const FIELDS = ["key","type","location","title","body","imageUrl","ctaLabel","ctaHref","active","startsAt","endsAt","priority"];
+/** Same rule as a link — relative or https only, whatever the resource is. */
+function badMediaUrl(url) {
+  return badHref(url) ? "Media must be a path starting with / or a full https:// address." : null;
+}
+
+const FIELDS = ["key","type","location","title","body","mediaType","mediaUrl","caption","ctaLabel","ctaHref","active","startsAt","endsAt","priority"];
 const pick = (body) => FIELDS.reduce((o, k) => (body[k] !== undefined ? { ...o, [k]: body[k] } : o), {});
 
 /* ---------------- site content ---------------- */
@@ -50,6 +55,10 @@ router.post("/", async (req, res, next) => {
     }
     const hrefError = badHref(data.ctaHref);
     if (hrefError) return res.status(400).json({ error: hrefError });
+    if (data.mediaUrl) {
+      const mediaError = badMediaUrl(data.mediaUrl);
+      if (mediaError) return res.status(400).json({ error: mediaError });
+    }
     if (data.startsAt && data.endsAt && new Date(data.endsAt) <= new Date(data.startsAt)) {
       return res.status(400).json({ error: "The end date has to be after the start date." });
     }
@@ -68,6 +77,10 @@ router.patch("/:id", async (req, res, next) => {
     const data = pick(req.body);
     const hrefError = badHref(data.ctaHref);
     if (hrefError) return res.status(400).json({ error: hrefError });
+    if (data.mediaUrl) {
+      const mediaError = badMediaUrl(data.mediaUrl);
+      if (mediaError) return res.status(400).json({ error: mediaError });
+    }
 
     const before = await SiteContent.findById(req.params.id).lean();
     if (!before) return res.status(404).json({ error: "That content does not exist." });

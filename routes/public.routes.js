@@ -390,7 +390,8 @@ router.get("/content", async (req, res, next) => {
     // Only the display fields go out. Who edited it and when is internal.
     res.json(rows.map((r) => ({
       key: r.key, type: r.type, location: r.location,
-      title: r.title, body: r.body, imageUrl: r.imageUrl,
+      title: r.title, body: r.body,
+      mediaType: r.mediaType, mediaUrl: r.mediaUrl, caption: r.caption,
       ctaLabel: r.ctaLabel, ctaHref: r.ctaHref, priority: r.priority,
     })));
   } catch (e) { next(e); }

@@ -4,7 +4,7 @@ const { ROOM_STATUSES } = require("../utils/constants");
 const roomSchema = new mongoose.Schema(
   {
     location: { type: String, enum: ["exclusive", "urban"], required: true, index: true },
-    number: { type: String, required: true },      // "G01", "104", "207"
+    number: { type: String, required: true },      // "101", "204", "308"
     floor: { type: Number, required: true },        // 0 ground, 1 first, 2 second
     type: { type: String, required: true },         // standard | deluxe | superior | classic | crown
     status: { type: String, enum: ROOM_STATUSES, default: "available" },

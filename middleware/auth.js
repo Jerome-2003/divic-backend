@@ -86,4 +86,40 @@ const requireAssignedFacility = (param = "facilityId") => async (req, res, next)
   } catch (e) { next(e); }
 };
 
-module.exports = { requireAuth, requireModule, requireRole, scopeLocation, requireAssignedFacility };
+/**
+ * Lets the named operational role(s) act freely — this is their routine work,
+ * done many times a day, and it stays a single tap for them.
+ *
+ * Owner and manager can also perform the action, but only by sending
+ * { override: true, overrideReason: "..." } in the body, and it is logged
+ * distinctly. The point is not to keep them out — an owner locked out of
+ * checking in a guest when the desk is empty is a worse outcome than an owner
+ * who can, but has to say why. A receptionist's tenth check-in of the day and
+ * an owner's once-a-month emergency check-in should not look identical in the
+ * activity log afterwards.
+ */
+function requireOperational(...operationalRoles) {
+  return (req, res, next) => {
+    if (operationalRoles.includes(req.user.role)) return next();
+    if (["owner", "manager"].includes(req.user.role)) {
+      if (!req.body || req.body.override !== true) {
+        return res.status(403).json({
+          error: "This is normally done by " + operationalRoles.join(" or ") +
+            ". Use the override option if you need to do it yourself right now.",
+          requiresOverride: true,
+        });
+      }
+      if (!req.body.overrideReason || !req.body.overrideReason.trim()) {
+        return res.status(400).json({ error: "Give a short reason for the override." });
+      }
+      req.isOverride = true;
+      return next();
+    }
+    return res.status(403).json({ error: "Your role does not have access to this." });
+  };
+}
+
+module.exports = {
+  requireAuth, requireModule, requireRole, scopeLocation, requireAssignedFacility,
+  requireOperational,
+};

@@ -11,7 +11,11 @@ dns.setServers(["8.8.8.8", "1.1.1.1"]);
 const LOCATIONS = {
   exclusive: {
     id: "exclusive",
-    name: "Divic Exclusive",
+    // Display name only — every Room/Booking/User document and every route
+    // still uses the key "exclusive". Renaming the key would touch every
+    // document already in the database for a change that only needs to
+    // affect what appears on screen.
+    name: "Divic 1",
     address: "Plot 55, 1st Avenue, E Close, Festac, Lagos",
     phone: "09169845311",
     typeOrder: ["standard", "deluxe", "superior"],
@@ -31,23 +35,23 @@ const mk = (nums, floor, type) => nums.map((number) => ({ number, floor, type })
 
 const ROOM_PLAN = {
   exclusive: [
-    ...mk(["G01", "G02", "G03", "G04", "G05", "G06"], 0, "standard"),
-    ...mk(["101", "102", "103", "104", "105"], 1, "deluxe"),
-    ...mk(["106", "107", "108", "109"], 1, "superior"),
+    ...mk(["101", "102", "103", "104", "105", "106"], 1, "standard"),
+    ...mk(["201", "202", "203", "207", "208"], 2, "deluxe"),
+    ...mk(["204", "205", "206", "209"], 2, "superior"),
   ],
   urban: [
-    ...mk(["G01"], 0, "classic"),
-    ...mk(["G02"], 0, "deluxe"),
-    ...mk(["G03"], 0, "superior"),
-    ...mk(["101", "102", "103", "104"], 1, "classic"),
-    ...mk(["105"], 1, "deluxe"),
-    ...mk(["106"], 1, "superior"),
-    ...mk(["107", "108", "109"], 1, "crown"),
-    ...mk(["201", "202", "203", "204"], 2, "deluxe"),
-    ...mk(["205", "206"], 2, "superior"),
-    ...mk(["207", "208", "209"], 2, "crown"),
+    ...mk(["103", "201", "206", "207", "208"], null, "classic"),
+    ...mk(["102", "202", "301", "306", "307", "308"], null, "deluxe"),
+    ...mk(["101", "209", "302", "309"], null, "superior"),
+    ...mk(["203", "204", "205", "303", "304", "305"], null, "crown"),
   ],
 };
+
+// Urban's room numbers span three floors within a single type (e.g. deluxe has
+// rooms on 1, 2 and 3), so mk()'s single fixed floor argument does not fit —
+// derive the floor from the room number itself instead: first digit of a
+// three-digit number is the floor.
+ROOM_PLAN.urban = ROOM_PLAN.urban.map((r) => ({ ...r, floor: Number(r.number[0]) }));
 
 // The two properties' facilities. `sellsItems` is what decides whether a
 // facility can post charges at all — a gym attendant is never shown a till.

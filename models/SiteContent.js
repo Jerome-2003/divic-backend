@@ -17,7 +17,15 @@ const siteContentSchema = new mongoose.Schema(
 
     title: { type: String, required: true, trim: true, maxlength: 120 },
     body: { type: String, trim: true, maxlength: 800 },
-    imageUrl: { type: String, trim: true },
+
+    // One field for media, not two. A popup's image and a banner's flyer are
+    // the same kind of thing; a second field that also means "the picture for
+    // this item" is exactly the duplication that causes a bug six months from
+    // now when someone updates one and not the other.
+    mediaType: { type: String, enum: ["none", "image", "video"], default: "none" },
+    mediaUrl: { type: String, trim: true },   // an https image or video URL
+    caption: { type: String, trim: true, maxlength: 200 },
+
     ctaLabel: { type: String, trim: true, maxlength: 40 },
     ctaHref: { type: String, trim: true },
 

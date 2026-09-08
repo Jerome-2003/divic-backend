@@ -165,6 +165,7 @@ async function revenueSummary(location) {
     byType[r.type].roomsOfThisType = (byType[r.type].roomsOfThisType || 0) + 1;
   });
 
+  const facRevenue = await facilityRevenue(location, from);
   return {
     property: LOCATIONS[location].name,
     period: { from, to: today(), days: 30 },
@@ -180,7 +181,11 @@ async function revenueSummary(location) {
     // Kept separate from the room metrics on purpose. ADR and RevPAR mean
     // revenue per room night sold and per available room; folding bar takings
     // into them makes the numbers meaningless.
-    facilityRevenue: await facilityRevenue(location, from),
+    facilityRevenue: facRevenue,
+    // The one figure that does combine them — a plain statement of how much
+    // the business made, so the assistant's revenue answers agree with what
+    // the Analytics page shows. ADR and RevPAR above are unaffected.
+    totalRevenue: revenue + facRevenue.total,
     currentRates: await ratesFor(location),
   };
 }

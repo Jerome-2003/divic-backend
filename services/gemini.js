@@ -9,7 +9,7 @@ function getClient() {
 
 const SYSTEM_RULES = `
 You are the assistant inside Divic's hotel management system. Divic runs two
-separate properties in Festac, Lagos: Divic Exclusive (15 rooms) and Divic
+separate properties in Festac, Lagos: Divic 1 (15 rooms) and Divic
 Urban (21 rooms). They are managed separately and their figures are never
 pooled unless the data you are given explicitly covers both.
 
@@ -78,7 +78,7 @@ module.exports = { ask, SYSTEM_RULES };
 
 const PUBLIC_RULES = `
 You answer questions from members of the public about Divic, a hotel business in
-Festac, Lagos, Nigeria, with two properties: Divic Exclusive and Divic Urban.
+Festac, Lagos, Nigeria, with two properties: Divic 1 and Divic Urban.
 
 You are on a public website. Follow these rules exactly:
 - Answer ONLY from the INFORMATION block provided. It contains the hotel's

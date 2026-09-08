@@ -66,7 +66,7 @@ const PREPARED_PROMPTS = [
     scope: "both",
     context: "propertyComparison",
     instruction:
-      "Compare Divic Exclusive and Divic Urban on occupancy, average daily rate and revenue over the last 30 days. Note that they run separately and have different room counts and price bands, so compare rates and percentages rather than raw totals alone. Say plainly which is performing better and on what measure.",
+      "Compare Divic 1 and Divic Urban on occupancy, average daily rate and revenue over the last 30 days. Note that they run separately and have different room counts and price bands, so compare rates and percentages rather than raw totals alone. Say plainly which is performing better and on what measure.",
   },
   {
     id: "pricing_check",

@@ -4,7 +4,7 @@ const Booking = require("../models/Booking");
 const Room = require("../models/Room");
 const Guest = require("../models/Guest");
 const Rate = require("../models/Rate");
-const { requireAuth, requireModule, scopeLocation } = require("../middleware/auth");
+const { requireAuth, requireModule, requireOperational, scopeLocation } = require("../middleware/auth");
 const { isRoomAvailable, validRange, nightsBetween } = require("../services/availability");
 const { logAction } = require("../services/audit");
 const { foliosFor, folioFor } = require("../services/folio");
@@ -62,7 +62,7 @@ router.get("/", scopeLocation, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/", scopeLocation, async (req, res, next) => {
+router.post("/", scopeLocation, requireOperational("receptionist"), async (req, res, next) => {
   const session = await mongoose.startSession();
   try {
     const {
@@ -124,7 +124,9 @@ router.post("/", scopeLocation, async (req, res, next) => {
 
     await created.populate("guest", "name phone email");
     logAction(req, {
-      action: "Created booking " + created.ref + " for " + created.guest.name + " in room " + created.roomNumber,
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Created booking " + created.ref + " for " + created.guest.name + " in room " + created.roomNumber +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
       entity: "Booking", entityId: created._id, location: req.location, after: created.toObject(),
     });
     req.app.get("io")?.to("loc:" + req.location).emit("booking:created", created);
@@ -132,7 +134,7 @@ router.post("/", scopeLocation, async (req, res, next) => {
   } catch (e) { next(e); } finally { session.endSession(); }
 });
 
-router.post("/:id/check-in", async (req, res, next) => {
+router.post("/:id/check-in", requireOperational("receptionist"), async (req, res, next) => {
   try {
     const booking = await Booking.findById(req.params.id).populate("guest", "name");
     if (!booking) return res.status(404).json({ error: "That booking does not exist." });
@@ -148,7 +150,9 @@ router.post("/:id/check-in", async (req, res, next) => {
     await Room.updateOne({ _id: booking.room }, { status: "occupied" });
 
     logAction(req, {
-      action: "Checked in " + booking.guest.name + " to room " + booking.roomNumber,
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Checked in " + booking.guest.name + " to room " + booking.roomNumber +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
       entity: "Booking", entityId: booking._id, location: booking.location,
     });
     req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);
@@ -156,7 +160,7 @@ router.post("/:id/check-in", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/:id/check-out", async (req, res, next) => {
+router.post("/:id/check-out", requireOperational("receptionist"), async (req, res, next) => {
   try {
     const booking = await Booking.findById(req.params.id).populate("guest", "name");
     if (!booking) return res.status(404).json({ error: "That booking does not exist." });
@@ -190,8 +194,10 @@ router.post("/:id/check-out", async (req, res, next) => {
     await Room.updateOne({ _id: booking.room }, { status: "dirty" });
 
     logAction(req, {
-      action: "Checked out " + booking.guest.name + " from room " + booking.roomNumber +
-        (balance > 0 ? " with " + balance + " naira owing" : ""),
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Checked out " + booking.guest.name + " from room " + booking.roomNumber +
+        (balance > 0 ? " with " + balance + " naira owing" : "") +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
       entity: "Booking", entityId: booking._id, location: booking.location,
     });
     req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);

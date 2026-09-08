@@ -23,7 +23,7 @@ const facilitySchema = new mongoose.Schema(
 );
 
 // A facility slug is unique within its property, not across both — the bar at
-// Divic Urban and the indoor bar at Divic Exclusive are different facilities,
+// Divic Urban and the indoor bar at Divic 1 are different facilities,
 // exactly as room numbers work in models/Room.js.
 facilitySchema.index({ location: 1, slug: 1 }, { unique: true });
 

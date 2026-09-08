@@ -10,7 +10,7 @@ router.use(requireAuth, requireRole("manager", "owner"));
 /**
  * Resolves the facilities a user is being assigned to and checks every one of
  * them sits at that user's own property. A Divic Urban bartender must never be
- * assignable to a Divic Exclusive bar, so this returns an error string rather
+ * assignable to a Divic 1 bar, so this returns an error string rather
  * than silently dropping the ones that do not belong.
  */
 async function resolveAssignedFacilities(ids, location) {

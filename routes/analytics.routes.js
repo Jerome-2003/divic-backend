@@ -59,6 +59,7 @@ router.get("/summary", scopeLocation, async (req, res, next) => {
   try {
     const days = Math.min(Number(req.query.days) || 30, 365);
     const from = shift(today(), -days);
+    let facRev;
 
     const rooms = await Room.countDocuments({ location: req.location });
     const bookings = await Booking.find({
@@ -108,7 +109,13 @@ router.get("/summary", scopeLocation, async (req, res, next) => {
       collectedByMethod: Object.fromEntries(collected.map((c) => [c._id, c.total])),
       cardFeesCollected: collected.reduce((sum, c) => sum + (c.fees || 0), 0),
       // Its own figure, alongside the room metrics and never inside them.
-      facilityRevenue: await facilityRevenue(req.location, from),
+      facilityRevenue: (facRev = await facilityRevenue(req.location, from)),
+      // A plain statement of how much the business made — rooms plus
+      // facilities. This is the ONLY figure that combines the two; ADR and
+      // RevPAR above stay room-revenue only, unconditionally, because they are
+      // defined industry metrics and folding bar takings into them would make
+      // them meaningless against any benchmark or the hotel's own history.
+      totalRevenue: revenue + facRev.total,
     });
   } catch (e) { next(e); }
 });
@@ -140,6 +147,54 @@ router.get("/occupancy", scopeLocation, async (req, res, next) => {
       });
     }
     res.json({ location: req.location, sellableRooms: rooms, nights });
+  } catch (e) { next(e); }
+});
+
+/**
+ * GET /api/analytics/today?location=
+ *
+ * "Sales" here means money that actually changed hands today — the sum of
+ * Payment.netAmount (falling back to amount for older records with no fee
+ * split) created today. This is deliberately a different figure from the
+ * 30-day totalRoomRevenue in /summary, which is booking-based (what was
+ * charged) rather than payment-based (what was actually paid) — the two will
+ * not usually match on any single day, and that is expected, not a bug.
+ *
+ * Split by whether the payment carries a facility (paid at a till) or not
+ * (a room payment, whichever method it came in by).
+ */
+router.get("/today", scopeLocation, async (req, res, next) => {
+  try {
+    const start = new Date(today() + "T00:00:00.000Z");
+    const payments = await Payment.find({
+      location: req.location, voided: false, createdAt: { $gte: start },
+    }).populate("facility", "name").lean();
+
+    let roomSalesToday = 0;
+    let facilitySalesToday = 0;
+    const facilitySalesByFacility = {};
+
+    payments.forEach((p) => {
+      const net = p.netAmount != null ? p.netAmount : p.amount;
+      if (p.facility) {
+        facilitySalesToday += net;
+        const name = p.facility.name || "Unknown facility";
+        facilitySalesByFacility[name] = (facilitySalesByFacility[name] || 0) + net;
+      } else {
+        roomSalesToday += net;
+      }
+    });
+
+    res.json({
+      date: today(),
+      location: req.location,
+      currency: "NGN",
+      roomSalesToday,
+      facilitySalesToday,
+      facilitySalesByFacility,
+      totalSalesToday: roomSalesToday + facilitySalesToday,
+      paymentsCollectedToday: payments.length,
+    });
   } catch (e) { next(e); }
 });
 
