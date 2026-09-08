@@ -104,6 +104,15 @@ router.patch("/:id", async (req, res, next) => {
     }
     if (location) user.location = location;
 
+    // Same rule POST enforces: "all" is a manager and owner privilege. Checked
+    // against the role the account ENDS UP with, because role and location can
+    // change in one request — without this, editing a manager down to
+    // receptionist leaves location "all" behind and scopeLocation then lets
+    // them read both properties.
+    if (user.location === "all" && !["manager", "owner"].includes(user.role)) {
+      return res.status(400).json({ error: "Only managers and owners can cover both properties." });
+    }
+
     // Validate the assignment against whatever role and property the account
     // ends up with, not the ones it had when the request arrived.
     if (user.role === "facility") {

@@ -6,15 +6,19 @@ const { logAction } = require("../services/audit");
 
 router.use(requireAuth, requireModule("guests"));
 
+// The search box is a plain substring match, so every regex metacharacter in
+// what was typed has to be neutered first. Unescaped it is two bugs at once: a
+// receptionist searching "+234" or "Kene (Jr" compiles an invalid pattern and
+// gets a 500, and a crafted one ("(a+)+$") backtracks for minutes, blocking the
+// event loop for every other user on this single-threaded process.
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 router.get("/", async (req, res, next) => {
   try {
     const { q, limit = 100 } = req.query;
-    const filter = q
-      ? { $or: [
-          { name: new RegExp(String(q).trim(), "i") },
-          { phone: new RegExp(String(q).trim(), "i") },
-          { email: new RegExp(String(q).trim(), "i") },
-        ] }
+    const needle = q ? new RegExp(escapeRegex(String(q).trim()), "i") : null;
+    const filter = needle
+      ? { $or: [{ name: needle }, { phone: needle }, { email: needle }] }
       : {};
     const guests = await Guest.find(filter).sort({ name: 1 }).limit(Math.min(Number(limit), 300)).lean();
 
@@ -71,3 +75,5 @@ router.patch("/:id", async (req, res, next) => {
 });
 
 module.exports = router;
+// Exported so test/integration.test.js can exercise it without a database.
+module.exports.escapeRegex = escapeRegex;

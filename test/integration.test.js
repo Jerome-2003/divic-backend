@@ -74,6 +74,25 @@ check("rejects a missing signature", verifyWebhookSignature(body, undefined) ===
 check("rejects a tampered body", verifyWebhookSignature(Buffer.from(body.toString() + " "), good) === false);
 check("rejects a wrong-length signature", verifyWebhookSignature(body, "abc") === false);
 
+console.log("\n=== Guest search escapes what was typed ===");
+const { escapeRegex } = require("../routes/guests.routes");
+// A Nigerian phone prefix and a name with a bracket are ordinary things to type
+// into the search box; unescaped, both compile to an invalid pattern and 500.
+for (const typed of ["+234", "Kene (Jr", "a**b", "[unclosed", "back\\slash", "?x"]) {
+  let ok = true;
+  try { new RegExp(escapeRegex(typed), "i"); } catch { ok = false; }
+  check('"' + typed + '" compiles to a valid pattern', ok);
+}
+check("escaping keeps it a literal match",
+  new RegExp(escapeRegex("+234"), "i").test("+2348012345678"));
+check("escaped metacharacters no longer match as wildcards",
+  new RegExp(escapeRegex("a.c"), "i").test("abc") === false);
+// The catastrophic-backtracking case: escaped, it is a harmless literal.
+const t0 = Date.now();
+new RegExp(escapeRegex("(a+)+$"), "i").test("a".repeat(40) + "b");
+check("a crafted pattern no longer backtracks", Date.now() - t0 < 50,
+  Date.now() - t0 + "ms");
+
 console.log("\n=== Permissions ===");
 const { PERMISSIONS, ROOM_PLAN } = require("../utils/constants");
 check("cleaner cannot reach billing", !PERMISSIONS.cleaner.includes("billing"));
