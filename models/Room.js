@@ -5,7 +5,7 @@ const roomSchema = new mongoose.Schema(
   {
     location: { type: String, enum: ["exclusive", "urban"], required: true, index: true },
     number: { type: String, required: true },      // "101", "204", "308"
-    floor: { type: Number, required: true },        // 0 ground, 1 first, 2 second
+    floor: { type: Number, required: true },        // 1 first, 2 second, 3 third
     type: { type: String, required: true },         // standard | deluxe | superior | classic | crown
     status: { type: String, enum: ROOM_STATUSES, default: "available" },
     statusNote: { type: String, trim: true },
