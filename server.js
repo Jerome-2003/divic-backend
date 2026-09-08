@@ -20,16 +20,24 @@ const server = http.createServer(app);
 // development. CLIENT_ORIGIN accepts a comma-separated list so the PMS can be
 // served from more than one place (a desktop build and a web route) without
 // needing another environment variable each time.
+// Trailing slashes are the single most common way this list silently stops
+// matching: a browser's Origin header never has one, but it's easy to paste
+// "https://divic-frontend.onrender.com/" into Render's env var UI and not
+// notice. Strip them here so a stray slash doesn't reintroduce this bug.
 const allowedOrigins = [
   ...String(process.env.CLIENT_ORIGIN || "").split(",").map((s) => s.trim()),
   ...String(process.env.WEBSITE_ORIGIN || "").split(",").map((s) => s.trim()),
   "http://localhost:5173",
   "http://localhost:5174",
-].filter(Boolean);
+]
+  .filter(Boolean)
+  .map((o) => o.replace(/\/+$/, ""));
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin.replace(/\/+$/, ""))) return cb(null, true);
+    console.warn("[cors] blocked origin:", origin, "allowed:", allowedOrigins);
     cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -42,7 +50,7 @@ app.use(express.json({ limit: "200kb" }));
 app.set("trust proxy", 1);
 
 // Real-time sync. Staff join a room per property so a change at Divic Urban
-// never appears on a screen at Divic 1.
+// never appears on a screen at Divic Exclusive.
 const io = new Server(server, { cors: { origin: allowedOrigins, credentials: true } });
 io.on("connection", (socket) => {
   socket.on("join", (location) => {
