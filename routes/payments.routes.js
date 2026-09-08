@@ -80,6 +80,13 @@ router.get("/folio/:bookingId", async (req, res, next) => {
 
 router.get("/booking/:bookingId", async (req, res, next) => {
   try {
+    // Same property check its siblings make. Without it a receptionist pinned
+    // to one address can read the payment history of the other's bookings.
+    const booking = await Booking.findById(req.params.bookingId).select("location").lean();
+    if (!booking) return res.status(404).json({ error: "That booking does not exist." });
+    if (req.user.location !== "all" && booking.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
     const payments = await Payment.find({ booking: req.params.bookingId, voided: false })
       .populate("recordedBy", "name").sort({ createdAt: -1 }).lean();
     res.json(payments);
@@ -92,6 +99,9 @@ router.post("/paystack/initialize", async (req, res, next) => {
     const { bookingId, amount, email } = req.body;
     const booking = await Booking.findById(bookingId).populate("guest", "name email");
     if (!booking) return res.status(404).json({ error: "That booking does not exist." });
+    if (req.user.location !== "all" && booking.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: "Enter an amount greater than zero." });
     }
