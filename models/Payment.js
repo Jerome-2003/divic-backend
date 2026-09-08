@@ -8,6 +8,12 @@ const paymentSchema = new mongoose.Schema(
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", index: true },
     location: { type: String, enum: ["exclusive", "urban"], required: true, index: true },
     amount: { type: Number, required: true, min: 1 },
+
+    // When the guest pays the Paystack fee on top, `amount` is what they were
+    // charged. The hotel's revenue is `netAmount` — analytics must never count
+    // the processing fee as room revenue.
+    feeAmount: { type: Number, default: 0 },
+    netAmount: { type: Number },
     method: { type: String, enum: ["paystack", "transfer", "cash", "pos"], required: true },
 
     // Paystack only. `verified` is set by the server after calling Paystack's

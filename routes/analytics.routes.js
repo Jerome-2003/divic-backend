@@ -82,9 +82,18 @@ router.get("/summary", scopeLocation, async (req, res, next) => {
       bySource[b.source] = (bySource[b.source] || 0) + 1;
     });
 
+    // Reported net of card fees. When a guest pays online the Paystack fee is
+    // added on top of the room rate, and that money passes straight through to
+    // Paystack — counting it as collected revenue would flatter every figure on
+    // this page. `cardFeesCollected` is shown separately so the owner can still
+    // see what the gateway is costing.
     const collected = await Payment.aggregate([
       { $match: { location: req.location, voided: false, createdAt: { $gte: new Date(from) } } },
-      { $group: { _id: "$method", total: { $sum: "$amount" } } },
+      { $group: {
+          _id: "$method",
+          total: { $sum: { $ifNull: ["$netAmount", "$amount"] } },
+          fees: { $sum: { $ifNull: ["$feeAmount", 0] } },
+      } },
     ]);
 
     res.json({
@@ -97,6 +106,7 @@ router.get("/summary", scopeLocation, async (req, res, next) => {
       byRoomType: byType, bySource,
       // Every naira taken in the period, front desk and facility tills alike.
       collectedByMethod: Object.fromEntries(collected.map((c) => [c._id, c.total])),
+      cardFeesCollected: collected.reduce((sum, c) => sum + (c.fees || 0), 0),
       // Its own figure, alongside the room metrics and never inside them.
       facilityRevenue: await facilityRevenue(req.location, from),
     });

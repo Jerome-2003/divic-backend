@@ -6,8 +6,11 @@ const bookingSchema = new mongoose.Schema(
     ref: { type: String, required: true, unique: true },   // DX-4821 / DU-9114
     location: { type: String, enum: ["exclusive", "urban"], required: true, index: true },
     guest: { type: mongoose.Schema.Types.ObjectId, ref: "Guest", required: true },
-    room: { type: mongoose.Schema.Types.ObjectId, ref: "Room", required: true },
-    roomNumber: { type: String, required: true },  // denormalised for fast lists
+    // Room is optional in exactly one case: payment succeeded but every room of
+    // that type was taken during checkout. The booking and the money are real,
+    // so the booking must exist — flagged for a human to place by hand.
+    room: { type: mongoose.Schema.Types.ObjectId, ref: "Room" },
+    roomNumber: { type: String },  // denormalised for fast lists
     roomType: { type: String, required: true },
 
     // Dates are stored as YYYY-MM-DD strings, not Date objects. A hotel night is
@@ -35,6 +38,18 @@ const bookingSchema = new mongoose.Schema(
 
     // Set when a booking originated from a public website request.
     fromRequest: { type: mongoose.Schema.Types.ObjectId, ref: "BookingRequest" },
+
+    // The room was chosen by the system, not a person. Shown in the PMS so a
+    // receptionist knows nobody weighed it up.
+    autoAssigned: { type: Boolean, default: false },
+    // Paid, but no room could be given. The most urgent state in this system.
+    needsAttention: { type: Boolean, default: false, index: true },
+    attentionReason: String,
+    roomChanges: [{
+      from: String, to: String, reason: String,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      at: { type: Date, default: Date.now },
+    }],
   },
   { timestamps: true }
 );

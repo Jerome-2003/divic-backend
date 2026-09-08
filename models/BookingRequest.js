@@ -33,10 +33,15 @@ const bookingRequestSchema = new mongoose.Schema(
 
     payment: {
       required: { type: Boolean, default: false },
-      paystackReference: String,
-      amount: Number,
+      paystackReference: { type: String, index: true, sparse: true },
+      // Quoted split out so the fee stays auditable after the fact.
+      roomTotal: Number,
+      feeAmount: Number,
+      amount: Number,               // total actually charged
       verified: { type: Boolean, default: false },
       verifiedAt: Date,
+      initializedAt: Date,
+      failureReason: String,
     },
 
     handledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

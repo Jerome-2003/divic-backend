@@ -5,7 +5,12 @@ const Rate = require("../models/Rate");
 const Facility = require("../models/Facility");
 const { availabilityByType, validRange, nightsBetween } = require("../services/availability");
 const { LOCATIONS, ROOM_PLAN } = require("../utils/constants");
-const { verifyTransaction } = require("../services/paystack");
+const { verifyTransaction, initializeTransaction } = require("../services/paystack");
+const { grossUp, splitSettlement, FEE_CONFIG } = require("../services/paystackFees");
+const SiteContent = require("../models/SiteContent");
+const FaqEntry = require("../models/FaqEntry");
+const { askPublic } = require("../services/gemini");
+const { settlePaidRequest } = require("../services/websiteBooking");
 
 /**
  * PUBLIC ENDPOINTS — no authentication.
@@ -20,6 +25,20 @@ const requestLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
   message: { error: "Too many booking requests from this connection. Please call the hotel instead." },
+});
+
+// Public assistant and quote endpoints cost money per call, so they are capped
+// far harder than an authenticated route would be. An open LLM endpoint on a
+// public site becomes somebody else's free chatbot within a week.
+const askLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  message: { error: "You are asking a little too quickly. Wait a moment, or call the hotel and we will help right away." },
+});
+const quoteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: "Too many price checks from this connection. Please try again shortly." },
 });
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
@@ -190,6 +209,255 @@ router.get("/booking-requests/:reference", async (req, res, next) => {
       .select("reference status location roomType checkIn checkOut nights quotedTotal createdAt").lean();
     if (!doc) return res.status(404).json({ error: "No request found with that reference." });
     res.json({ ...doc, locationName: LOCATIONS[doc.location].name });
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ */
+/*  QUOTE — what the guest will actually pay                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GET /api/public/quote?location=&roomType=&checkIn=&checkOut=
+ *
+ * Room total, card fee and grand total as three separate numbers. The guest has
+ * to see the fee here, before checkout — a total that grows on the Paystack page
+ * feels like a trick even when it is small and disclosed, and it is the most
+ * common reason a booking is abandoned at the last step.
+ */
+router.get("/quote", quoteLimiter, async (req, res, next) => {
+  try {
+    const { location, roomType, checkIn, checkOut } = req.query;
+    if (!LOCATIONS[location]) return res.status(400).json({ error: "Choose a property." });
+    if (!LOCATIONS[location].typeOrder.includes(roomType)) {
+      return res.status(400).json({ error: "That room type is not available at this property." });
+    }
+    const bad = validRange(checkIn, checkOut);
+    if (bad) return res.status(400).json({ error: bad });
+    if (checkIn < today()) return res.status(400).json({ error: "Check-in cannot be in the past." });
+
+    const rateDoc = await Rate.findOne({ location }).lean();
+    const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[location].rates;
+    const rate = prices[roomType];
+    const nights = nightsBetween(checkIn, checkOut);
+    const quote = grossUp(rate * nights);
+
+    const counts = await availabilityByType(location, checkIn, checkOut);
+
+    res.json({
+      location, locationName: LOCATIONS[location].name,
+      roomType, checkIn, checkOut, nights,
+      rate,
+      roomTotal: quote.roomTotal,
+      paystackFee: quote.fee,
+      totalPayable: quote.totalPayable,
+      currency: "NGN",
+      roomsAvailable: counts[roomType] || 0,
+      feeNote: quote.feesPassedToGuest
+        ? "Includes the card processing fee charged by our payment provider."
+        : "No card fee is added to your total.",
+    });
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ */
+/*  PAY FOR A REQUEST                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * POST /api/public/booking-requests/:reference/pay
+ *
+ * Starts Paystack checkout for a request that already exists. The amount is
+ * recomputed here from the stored request — nothing about the price is accepted
+ * from the browser, or anyone could book a crown suite for one naira by editing
+ * the request in dev tools.
+ */
+router.post("/booking-requests/:reference/pay", requestLimiter, async (req, res, next) => {
+  try {
+    const doc = await BookingRequest.findOne({ reference: String(req.params.reference).toUpperCase() });
+    if (!doc) return res.status(404).json({ error: "No request found with that reference." });
+    if (doc.status === "accepted" && doc.payment.verified) {
+      return res.status(409).json({ error: "This booking has already been paid for." });
+    }
+    if (["declined", "expired"].includes(doc.status)) {
+      return res.status(409).json({ error: "This request is no longer open. Please start a new booking." });
+    }
+
+    const quote = grossUp(doc.quotedTotal);
+    const reference = "DIVICWEB_" + doc.reference.replace("-", "") + "_" + Date.now().toString().slice(-6);
+
+    const init = await initializeTransaction({
+      email: doc.guestEmail || "bookings@divic.ng",
+      amountNaira: quote.totalPayable,
+      reference,
+      metadata: {
+        requestReference: doc.reference,
+        location: doc.location,
+        roomType: doc.roomType,
+        checkIn: doc.checkIn,
+        checkOut: doc.checkOut,
+        guestName: doc.guestName,
+      },
+      callbackUrl: (process.env.WEBSITE_ORIGIN || "") + "/booking-status?ref=" + doc.reference,
+    });
+
+    if (!init || !init.status) {
+      return res.status(502).json({ error: "We could not start the payment. Please try again, or call the hotel." });
+    }
+
+    doc.payment.required = true;
+    doc.payment.paystackReference = reference;
+    doc.payment.roomTotal = quote.roomTotal;
+    doc.payment.feeAmount = quote.fee;
+    doc.payment.amount = quote.totalPayable;
+    doc.payment.initializedAt = new Date();
+    await doc.save();
+
+    res.json({
+      reference: doc.reference,
+      paystackReference: reference,
+      authorizationUrl: init.data.authorization_url,
+      accessCode: init.data.access_code,
+      roomTotal: quote.roomTotal,
+      paystackFee: quote.fee,
+      totalPayable: quote.totalPayable,
+      currency: "NGN",
+    });
+  } catch (e) { next(e); }
+});
+
+/**
+ * GET /api/public/booking-requests/:reference/payment-status
+ *
+ * The website polls this after the guest returns from Paystack. It re-verifies
+ * with Paystack rather than trusting the redirect, because a guest landing back
+ * on the site proves nothing about whether money moved.
+ */
+router.get("/booking-requests/:reference/payment-status", async (req, res, next) => {
+  try {
+    const doc = await BookingRequest.findOne({ reference: String(req.params.reference).toUpperCase() });
+    if (!doc) return res.status(404).json({ error: "No request found with that reference." });
+
+    if (!doc.payment.verified && doc.payment.paystackReference) {
+      const check = await verifyTransaction(doc.payment.paystackReference, Math.round(doc.payment.amount * 100));
+      if (check.ok) await settlePaidRequest(req.app, doc, check);
+      else doc.payment.failureReason = check.reason;
+      await doc.save();
+    }
+
+    const booking = doc.booking
+      ? await require("../models/Booking").findById(doc.booking).select("ref roomNumber needsAttention status").lean()
+      : null;
+
+    res.json({
+      reference: doc.reference,
+      status: doc.status,
+      paid: !!doc.payment.verified,
+      roomTotal: doc.payment.roomTotal,
+      paystackFee: doc.payment.feeAmount,
+      amountPaid: doc.payment.verified ? doc.payment.amount : undefined,
+      bookingRef: booking ? booking.ref : undefined,
+      roomAssigned: booking ? !!booking.roomNumber : false,
+      // Deliberately not the room number: that is not public information until
+      // the guest is standing at the desk.
+      awaitingRoom: booking ? !!booking.needsAttention : false,
+      hotelPhone: LOCATIONS[doc.location].phone,
+    });
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ */
+/*  SITE CONTENT — promos and popups published from the PMS            */
+/* ------------------------------------------------------------------ */
+
+router.get("/content", async (req, res, next) => {
+  try {
+    const location = LOCATIONS[req.query.location] ? req.query.location : null;
+    const now = new Date();
+
+    // Live means switched on and inside its window. A December promo written in
+    // November turns itself on and off without anyone remembering to do it.
+    const filter = {
+      active: true,
+      $and: [
+        { $or: [{ startsAt: null }, { startsAt: { $exists: false } }, { startsAt: { $lte: now } }] },
+        { $or: [{ endsAt: null }, { endsAt: { $exists: false } }, { endsAt: { $gte: now } }] },
+      ],
+    };
+    if (location) filter.$and.push({ $or: [{ location: "both" }, { location }] });
+
+    const rows = await SiteContent.find(filter).sort({ priority: -1, updatedAt: -1 }).lean();
+
+    // Only the display fields go out. Who edited it and when is internal.
+    res.json(rows.map((r) => ({
+      key: r.key, type: r.type, location: r.location,
+      title: r.title, body: r.body, imageUrl: r.imageUrl,
+      ctaLabel: r.ctaLabel, ctaHref: r.ctaHref, priority: r.priority,
+    })));
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ */
+/*  FAQ                                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The curated list. Most visitors have an ordinary question — check-in time,
+ * parking, whether there is a pool — and this answers it instantly, for free,
+ * and it still works when Gemini is down. The bot below is the fallback, not
+ * the front door.
+ */
+router.get("/faq", async (req, res, next) => {
+  try {
+    const location = LOCATIONS[req.query.location] ? req.query.location : null;
+    const filter = { active: true };
+    if (location) filter.$or = [{ location: "both" }, { location }];
+
+    const rows = await FaqEntry.find(filter).sort({ category: 1, order: 1 }).lean();
+    res.json(rows.map((r) => ({
+      question: r.question, answer: r.answer, category: r.category, location: r.location,
+    })));
+  } catch (e) { next(e); }
+});
+
+/**
+ * POST /api/public/faq/ask  { question, location? }
+ *
+ * Context is built from the published FAQ and public property information only.
+ * There is deliberately no path from here to bookings, guests, availability or
+ * anything else in the PMS — see services/gemini.js askPublic.
+ */
+router.post("/faq/ask", askLimiter, async (req, res, next) => {
+  try {
+    const question = clean(req.body && req.body.question, 300);
+    if (question.length < 3) {
+      return res.status(400).json({ error: "Type a question, or tap one of the suggestions." });
+    }
+    const location = LOCATIONS[req.body.location] ? req.body.location : null;
+
+    const faqFilter = { active: true };
+    if (location) faqFilter.$or = [{ location: "both" }, { location }];
+    const faqs = await FaqEntry.find(faqFilter).sort({ order: 1 }).limit(60).lean();
+
+    const rateDocs = await Rate.find().lean();
+    const rateBy = Object.fromEntries(rateDocs.map((d) => [d.location, Object.fromEntries(Object.entries(d.prices))]));
+    const facilities = await Facility.find({ status: "open" }).select("location name type openingHours").lean();
+
+    const information = {
+      properties: Object.values(LOCATIONS).map((l) => ({
+        name: l.name, address: l.address, phone: l.phone,
+        totalRooms: ROOM_PLAN[l.id].length,
+        roomTypes: l.typeOrder.map((t) => ({ type: t, nightlyRate: (rateBy[l.id] || l.rates)[t] })),
+        facilities: facilities.filter((f) => f.location === l.id).map((f) => ({ name: f.name, hours: f.openingHours })),
+      })),
+      currency: "NGN",
+      publishedAnswers: faqs.map((f) => ({ question: f.question, answer: f.answer })),
+      bookingPage: "/book",
+      bookingStatusPage: "/booking-status",
+    };
+
+    const result = await askPublic({ question, information });
+    if (!result.ok) return res.status(503).json({ error: result.text });
+    res.json({ answer: result.text });
   } catch (e) { next(e); }
 });
 

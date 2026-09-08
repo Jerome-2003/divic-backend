@@ -52,6 +52,29 @@ async function run() {
     console.log("[seed] " + LOCATIONS[location].name + ": " + facilityCount + " facilities");
   }
 
+  // Starting FAQ answers for the website assistant. Managers edit these in the
+  // PMS; the bot answers from them and from published property information, and
+  // from nothing else. $setOnInsert so re-seeding never overwrites edits.
+  const FaqEntry = require("../models/FaqEntry");
+  const STARTER_FAQ = [
+    { question: "What time is check-in and check-out?", answer: "Check-in is from 2pm and check-out is by 12 noon. If you need to arrive earlier or leave later, call us and we will do our best to arrange it.", category: "Your stay", order: 1 },
+    { question: "Where are the two properties?", answer: "Divic Exclusive is at Plot 55, 1st Avenue, E Close, Festac, Lagos. Divic Urban is at Plot 340, 3rd Avenue, A1 Close, Festac, Lagos.", category: "Getting here", order: 2 },
+    { question: "Do you have parking?", answer: "Yes, both properties have secure on-site parking for guests at no extra charge.", category: "Getting here", order: 3 },
+    { question: "How do I pay?", answer: "You can pay online by card when you book, or settle at the front desk by cash, transfer or POS when you arrive.", category: "Booking and payment", order: 4 },
+    { question: "Can I cancel or change my booking?", answer: "Call the property directly and we will help. Have your booking reference to hand.", category: "Booking and payment", order: 5 },
+    { question: "What facilities do you have?", answer: "Divic Urban has an indoor pool, a bar, a gym and a restaurant. Divic Exclusive has a pool and both an indoor and an outdoor bar.", category: "Facilities", order: 6 },
+    { question: "Is breakfast included?", answer: "Please call the property to confirm what is included with your room type, as this varies.", category: "Your stay", order: 7 },
+  ];
+
+  for (const entry of STARTER_FAQ) {
+    await FaqEntry.updateOne(
+      { question: entry.question },
+      { $setOnInsert: { ...entry, location: "both", active: true } },
+      { upsert: true }
+    );
+  }
+  console.log("[seed] FAQ answers ready (" + STARTER_FAQ.length + " starters)");
+
   const ownerExists = await User.findOne({ role: "owner" });
   if (!ownerExists) {
     const owner = new User({

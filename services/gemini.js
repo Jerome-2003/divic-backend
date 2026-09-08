@@ -71,3 +71,60 @@ async function ask({ instruction, context, userQuestion, history = [] }) {
 }
 
 module.exports = { ask, SYSTEM_RULES };
+
+/* ------------------------------------------------------------------ */
+/*  PUBLIC ASSISTANT — website FAQ bot                                 */
+/* ------------------------------------------------------------------ */
+
+const PUBLIC_RULES = `
+You answer questions from members of the public about Divic, a hotel business in
+Festac, Lagos, Nigeria, with two properties: Divic Exclusive and Divic Urban.
+
+You are on a public website. Follow these rules exactly:
+- Answer ONLY from the INFORMATION block provided. It contains the hotel's
+  published FAQ answers, addresses, phone numbers, room types, published rates
+  and open facilities.
+- If the answer is not in that block, say plainly that you do not have it and
+  give the phone number for the property being asked about. Never guess a price,
+  a policy, a check-in time or whether a room is free.
+- You have NO access to bookings, guests, availability or any hotel records. If
+  someone asks about their own reservation, tell them to use the booking status
+  page with their reference, or to call the hotel.
+- You cannot make, change or cancel a booking. Say so and point to the booking
+  page.
+- Answer only questions about this hotel. For anything else — general knowledge,
+  writing, code, other businesses — say that is not something you can help with
+  here.
+- Be brief and warm. Two or three sentences is usually right. Prices in naira.
+- Never claim to be a person and never promise anything on the hotel's behalf.
+`.trim();
+
+/**
+ * The public bot. Deliberately a separate entry point from `ask` so PMS context
+ * builders can never be wired into it by accident.
+ */
+async function askPublic({ question, information }) {
+  const genAI = getClient();
+  if (!genAI) {
+    return { ok: false, text: "Our assistant is offline at the moment. Please call the hotel and we will help you directly." };
+  }
+
+  const model = genAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    systemInstruction: PUBLIC_RULES,
+    generationConfig: { temperature: 0.2, maxOutputTokens: 400 },
+  });
+
+  try {
+    const res = await model.generateContent(
+      "INFORMATION:\n" + JSON.stringify(information) + "\n\nA visitor asks: " + question
+    );
+    return { ok: true, text: res.response.text() };
+  } catch (err) {
+    console.error("[gemini:public] request failed", err.message);
+    return { ok: false, text: "Our assistant could not answer just now. Please call the hotel and we will help you directly." };
+  }
+}
+
+module.exports.askPublic = askPublic;
+module.exports.PUBLIC_RULES = PUBLIC_RULES;

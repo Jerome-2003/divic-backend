@@ -223,4 +223,66 @@ router.post("/:id/cancel", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Moves a booking to a different room, or places a paid booking that arrived
+ * with no room because everything was taken during checkout.
+ *
+ * Availability is re-checked here rather than trusted from the client: the list
+ * the receptionist is looking at may be seconds out of date.
+ */
+router.patch("/:id/room", async (req, res, next) => {
+  try {
+    const { roomNumber, reason } = req.body;
+    if (!roomNumber) return res.status(400).json({ error: "Choose a room to move this booking to." });
+
+    const booking = await Booking.findById(req.params.id).populate("guest", "name");
+    if (!booking) return res.status(404).json({ error: "That booking does not exist." });
+    if (req.user.location !== "all" && booking.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
+    if (["checked-out", "cancelled"].includes(booking.status)) {
+      return res.status(409).json({ error: "A booking that is " + booking.status + " cannot be moved." });
+    }
+
+    const room = await Room.findOne({ location: booking.location, number: roomNumber });
+    if (!room) return res.status(404).json({ error: "Room " + roomNumber + " does not exist at this property." });
+    if (room.status === "maintenance") {
+      return res.status(409).json({ error: "Room " + roomNumber + " is out of order." });
+    }
+
+    const free = await isRoomAvailable(booking.location, roomNumber, booking.checkIn, booking.checkOut, booking._id);
+    if (!free) {
+      return res.status(409).json({ error: "Room " + roomNumber + " is already booked for part of those dates." });
+    }
+
+    const previous = booking.roomNumber || null;
+
+    // A guest who is already in house is physically in the old room, so free
+    // the old one for cleaning and take the new one straight to occupied.
+    if (booking.status === "in-house") {
+      if (booking.room) await Room.updateOne({ _id: booking.room }, { status: "dirty" });
+      await Room.updateOne({ _id: room._id }, { status: "occupied" });
+    }
+
+    booking.room = room._id;
+    booking.roomNumber = room.number;
+    booking.roomType = room.type;
+    booking.autoAssigned = false;
+    booking.needsAttention = false;
+    booking.attentionReason = undefined;
+    booking.roomChanges.push({ from: previous, to: room.number, reason, by: req.user.id });
+    await booking.save();
+
+    logAction(req, {
+      action: previous
+        ? "Moved " + booking.guest.name + " from room " + previous + " to " + room.number + (reason ? " — " + reason : "")
+        : "Placed " + booking.guest.name + " in room " + room.number + " (booking had no room)",
+      entity: "Booking", entityId: booking._id, location: booking.location,
+      before: { roomNumber: previous }, after: { roomNumber: room.number },
+    });
+    req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);
+    res.json(booking);
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

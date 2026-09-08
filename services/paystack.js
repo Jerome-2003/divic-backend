@@ -1,4 +1,5 @@
 const https = require("https");
+const crypto = require("crypto");
 
 // The secret key never leaves the server. The frontend only ever sees the
 // public key and the transaction reference.
@@ -61,4 +62,27 @@ async function initializeTransaction({ email, amountNaira, reference, metadata, 
   });
 }
 
-module.exports = { verifyTransaction, initializeTransaction, paystackRequest };
+/**
+ * Verifies a Paystack webhook against the raw request body.
+ *
+ * This is not optional. An unverified webhook endpoint lets anyone POST
+ * "payment succeeded" for any reference and get a room for free. The signature
+ * is HMAC-SHA512 of the RAW body using the secret key, so the route must use
+ * express.raw — a body that has been parsed and re-stringified will not match.
+ */
+function verifyWebhookSignature(rawBody, signature) {
+  if (!signature || !process.env.PAYSTACK_SECRET_KEY) return false;
+  const expected = crypto
+    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+    .update(rawBody)
+    .digest("hex");
+  // Constant-time compare, so a caller cannot narrow the signature by timing.
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(String(signature), "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+module.exports = {
+  verifyTransaction, initializeTransaction, paystackRequest, verifyWebhookSignature,
+};

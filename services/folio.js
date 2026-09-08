@@ -26,12 +26,24 @@ async function facilityChargeTotals(bookingIds) {
   return Object.fromEntries(rows.map((r) => [String(r._id), r.total]));
 }
 
-/** Payments credited to each of these bookings, keyed by booking id. */
+/**
+ * Payments credited to each of these bookings, keyed by booking id.
+ *
+ * Credits the NET, not the amount charged. When a guest pays online the card
+ * fee is added on top of the room rate, so `amount` is larger than what the
+ * booking actually owes. Summing `amount` would show every website booking as
+ * overpaid and hand out phantom credit at the desk. `netAmount` is what reached
+ * the hotel; it falls back to `amount` for the older records and for cash,
+ * transfer and POS payments, where no fee was ever added.
+ */
 async function paymentTotals(bookingIds) {
   if (!bookingIds.length) return {};
   const rows = await Payment.aggregate([
     { $match: { booking: { $in: bookingIds }, voided: false } },
-    { $group: { _id: "$booking", total: { $sum: "$amount" } } },
+    { $group: {
+        _id: "$booking",
+        total: { $sum: { $ifNull: ["$netAmount", "$amount"] } },
+    } },
   ]);
   return Object.fromEntries(rows.map((r) => [String(r._id), r.total]));
 }

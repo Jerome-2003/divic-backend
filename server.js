@@ -16,10 +16,15 @@ const { notFound, errorHandler } = require("./middleware/errorHandler");
 const app = express();
 const server = http.createServer(app);
 
+// Three apps talk to this API: the staff PMS, the public website, and local
+// development. CLIENT_ORIGIN accepts a comma-separated list so the PMS can be
+// served from more than one place (a desktop build and a web route) without
+// needing another environment variable each time.
 const allowedOrigins = [
-  process.env.CLIENT_ORIGIN,       // the PMS frontend
-  process.env.WEBSITE_ORIGIN,      // the public hotel website
+  ...String(process.env.CLIENT_ORIGIN || "").split(",").map((s) => s.trim()),
+  ...String(process.env.WEBSITE_ORIGIN || "").split(",").map((s) => s.trim()),
   "http://localhost:5173",
+  "http://localhost:5174",
 ].filter(Boolean);
 
 app.use(cors({
@@ -29,6 +34,10 @@ app.use(cors({
   },
   credentials: true,
 }));
+// Mounted BEFORE express.json: the Paystack signature is an HMAC of the raw
+// bytes, and a parsed-then-restringified body will not match it.
+app.use("/api/webhooks", require("./routes/webhook.routes"));
+
 app.use(express.json({ limit: "200kb" }));
 app.set("trust proxy", 1);
 
@@ -55,6 +64,8 @@ app.use("/api/staff", require("./routes/staff.routes"));
 app.use("/api/analytics", require("./routes/analytics.routes"));
 app.use("/api/audit", require("./routes/audit.routes"));
 app.use("/api/ai", require("./routes/ai.routes"));
+app.use("/api/notifications", require("./routes/notifications.routes"));
+app.use("/api/content", require("./routes/content.routes"));
 app.use("/api/public", require("./routes/public.routes"));
 
 app.use(notFound);
