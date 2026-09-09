@@ -3,9 +3,7 @@ const router = require("express").Router();
 const rateLimit = require("express-rate-limit");
 const { requireAuth, requireModule, scopeLocation } = require("../middleware/auth");
 const { promptsForRole, promptById } = require("../services/aiPrompts");
-const { buildContext } = require("../services/aiContext");
-const { ask } = require("../services/gemini");
-const { runAgent, fallbackHelp } = require("../services/agent");
+const { runAgent, runPreparedPrompt, fallbackHelp } = require("../services/agent");
 const { logAction } = require("../services/audit");
 
 router.use(requireAuth, requireModule("ai"));
@@ -61,25 +59,10 @@ router.post("/ask", aiLimiter, scopeLocation, async (req, res, next) => {
         return res.status(403).json({ error: "Your role does not have access to that question." });
       }
 
-      const context = prompt.scope === "none"
-        ? null
-        : await buildContext(prompt.context, prompt.scope === "both" ? (req.user.location === "all" ? null : req.user.location) : req.location);
-
-      if (prompt.context === "propertyComparison") {
-        // propertyComparison does not need a location. buildContext ignores it,
-        // but passing null keeps this route explicit.
-      }
-
-      const result = await ask({
-        instruction: prompt.instruction,
-        context,
-        userQuestion: question || prompt.label,
-        history: Array.isArray(history) ? history : [],
-      });
-
+      const result = await runPreparedPrompt(promptId, question || prompt.label, req.user, Array.isArray(history) ? history : []);
       if (!result.ok) return res.status(503).json({ error: result.text });
       logAction(req, { action: "Asked prepared assistant prompt: " + prompt.id, entity: "AI", location: req.location });
-      return res.json({ answer: result.text, promptId, mode: "gemini", contextUsed: prompt.context, context });
+      return res.json({ answer: result.text, promptId, mode: result.mode || "database", contextUsed: prompt.context, context: result.data || null });
     }
 
     const result = await runAgent({

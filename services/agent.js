@@ -16,6 +16,7 @@ const { ask } = require("./gemini");
 const { isRoomAvailable } = require("./availability");
 const { folioFor, foliosFor } = require("./folio");
 const { LOCATIONS } = require("../utils/constants");
+const { promptById } = require("./aiPrompts");
 
 const ALL_PROPS = ["exclusive", "urban"];
 const STAFF_ROLES = ["receptionist", "cleaner", "manager", "facility", "owner"];
@@ -139,17 +140,41 @@ async function auditSearch(term, user) {
 
 function fallbackHelp() {
   return [
-    "I could not identify exactly what you are looking for.",
+    "You can type normal questions. For exact lookups, these commands always work:",
     "",
-    "Try one of these:",
+    "Daily running",
+    "What needs my attention today?",
+    "Which rooms aren't ready to sell?",
+    "What website requests are waiting?",
+    "How full are the next two weeks?",
+    "",
+    "Money",
+    "Who still owes money?",
+    "How did the last 30 days go?",
+    "How do the two properties compare?",
+    "Are my rates right?",
+    "",
+    "Guests",
+    "Where are bookings coming from?",
+    "Who are my regulars?",
+    "",
+    "Learning",
+    "Explain a hotel term",
+    "",
+    "Exact commands",
     "GUEST - NAME: ___",
     "BOOKING - REF: DX-____",
+    "WEB REQUEST - REF: WEB-______",
+    "PAYMENT - REF: ______",
     "ROOM - NUMBER: ___",
     "ROOM TYPE - NAME: ___",
     "FACILITY - NAME: ___",
     "STAFF - NAME: ___",
+    "RATES - ROOM TYPE: ___",
     "ANALYTICS - TOPIC: ___",
     "AVAILABILITY - ROOM TYPE: ___ - CHECK-IN: YYYY-MM-DD - CHECK-OUT: YYYY-MM-DD",
+    "",
+    "You can also type a booking reference, room number or guest's full name by itself.",
   ].join("\n");
 }
 
@@ -498,7 +523,21 @@ function extractAfter(label, question) {
 
 function inferDirect(question) {
   const q = cleanText(question);
+  const lq = lower(q);
   let m;
+
+  if (/^what needs (my )?attention today\??$/i.test(q) || /what.*needs.*attention.*today/i.test(q)) return { type: "prepared", promptId: "today_briefing" };
+  if (/^which rooms (?:are )?not ready to sell\??$/i.test(q) || /rooms?.*(?:not ready|not sellable|cannot be sold|out of service)/i.test(q)) return { type: "prepared", promptId: "rooms_not_ready" };
+  if (/^what website requests are waiting\??$/i.test(q) || /pending website (?:requests|bookings?)/i.test(q)) return { type: "prepared", promptId: "pending_requests" };
+  if (/^how full are the next two weeks\??$/i.test(q) || /next (?:14|two weeks).*(occupancy|full)/i.test(q)) return { type: "prepared", promptId: "occupancy_outlook" };
+  if (/^who still owes money\??$/i.test(q) || /outstanding balances?|who owes/i.test(q)) return { type: "prepared", promptId: "unpaid_balances" };
+  if (/^how did the last 30 days go\??$/i.test(q) || /last 30 days.*(revenue|occupancy|performance)/i.test(q)) return { type: "prepared", promptId: "revenue_review" };
+  if (/^how do the two properties compare\??$/i.test(q) || /compare.*properties/i.test(q)) return { type: "prepared", promptId: "compare_properties" };
+  if (/^are my rates right\??$/i.test(q) || /(pricing|rates?).*(right|good|high|low|correct)/i.test(q)) return { type: "prepared", promptId: "pricing_check" };
+  if (/^where are bookings coming from\??$/i.test(q) || /booking sources?/i.test(q)) return { type: "prepared", promptId: "booking_sources" };
+  if (/^who are my regulars\??$/i.test(q) || /repeat guests?/i.test(q)) return { type: "prepared", promptId: "repeat_guests" };
+  if (/^explain a hotel term\??$/i.test(q) || /^(?:explain|what does) (?:the )?(?:hotel )?(?:term )?\w+/i.test(q)) return { type: "prepared", promptId: "explain_metric" };
+  if (/^how can i ask the assistant\??$/i.test(q) || /assistant (?:help|commands?)/i.test(q)) return { type: "help" };
 
   m = q.match(/\b((?:DX|DU)-\d{4,8})\b/i);
   if (m) return { type: "booking", ref: m[1].toUpperCase() };
@@ -573,7 +612,8 @@ async function classifyWithGemini(question) {
     instruction: `
 Classify the user's hotel-PMS question into exactly ONE action and return ONLY JSON.
 Allowed actions:
-guest, booking, webRequest, payment, room, roomType, facility, facilitySales, staff, rates, availability, analytics, public, notifications, audit, help.
+guest, booking, webRequest, payment, room, roomType, facility, facilitySales, staff, rates, availability, analytics, public, notifications, audit, prepared, help.
+For the dashboard questions use prepared with one of these promptIds: today_briefing, rooms_not_ready, pending_requests, occupancy_outlook, unpaid_balances, revenue_review, compare_properties, pricing_check, booking_sources, repeat_guests, explain_metric.
 JSON shape:
 {"type":"guest","term":"John Doe"}
 {"type":"booking","ref":"DX-1234"}
@@ -590,7 +630,7 @@ JSON shape:
 {"type":"notifications"}
 {"type":"audit","term":"booking"}
 {"type":"public","term":"check-in time"}
-{"type":"help"}
+{"type":"prepared","promptId":"today_briefing"} or {"type":"help"}
 Do not answer the question. Do not invent missing values. If required values are absent, leave them blank.
 `,
     context: { now: new Date().toISOString(), examples: fallbackHelp() },
@@ -603,7 +643,7 @@ Do not answer the question. Do not invent missing values. If required values are
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (!["guest","booking","webRequest","payment","room","roomType","facility","facilitySales","staff","rates","availability","analytics","public","notifications","audit","help"].includes(parsed.type)) return null;
+    if (!["guest","booking","webRequest","payment","room","roomType","facility","facilitySales","staff","rates","availability","analytics","public","notifications","audit","prepared","help"].includes(parsed.type)) return null;
     return parsed;
   } catch {
     return null;
@@ -661,6 +701,104 @@ async function inferFromDatabaseTerms(question, user) {
   return null;
 }
 
+
+
+const HOTEL_TERMS = {
+  occupancy: "Occupancy is the percentage of sellable room nights that are occupied. Example: 10 occupied rooms out of 20 available rooms means 50% occupancy.",
+  adr: "ADR means Average Daily Rate: room revenue divided by the number of room nights sold. Example: ₦400,000 from 10 sold room nights gives an ADR of ₦40,000.",
+  revpar: "RevPAR means Revenue per Available Room: room revenue divided by all available room nights. Example: ₦400,000 across 20 rooms for one night gives RevPAR of ₦20,000.",
+  revenue: "Revenue is money earned from the hotel's sales. In this assistant, room revenue and facility revenue are kept separate for metrics such as ADR and RevPAR.",
+  folio: "A folio is the guest's running account: room charges plus things charged to the room, minus payments.",
+};
+
+function explainTerm(question) {
+  const q = lower(question);
+  const hit = Object.keys(HOTEL_TERMS).find(k => new RegExp(`\\b${k}\\b`, "i").test(q) || (k === "occupancy" && /how full|fullness|occupancy rate/.test(q)));
+  if (hit) return HOTEL_TERMS[hit];
+  return "Common hotel terms: Occupancy = how full the rooms are. ADR = average room rate actually sold. RevPAR = room revenue divided by all available room nights. Ask about a specific term such as occupancy, ADR, RevPAR or folio.";
+}
+
+async function preparedContext(promptId, user) {
+  const prompt = promptById(promptId);
+  if (!prompt) return null;
+  const location = prompt.scope === "both" ? null : (user.location === "all" ? null : user.location);
+  return prompt.context === "none" ? null : buildContext(prompt.context, location);
+}
+
+function directPreparedAnswer(promptId, context) {
+  if (!context) return null;
+  const moneyShort = (n) => money(n);
+  switch (promptId) {
+    case "today_briefing": {
+      const lines = [`${context.property} — today (${context.date})`, `Occupancy: ${context.occupancyPercent}%.`];
+      if (context.arrivingToday?.length) lines.push(`Arrivals: ${context.arrivingToday.map(x => `${x.guest} (room ${x.room || "unassigned"})`).join(", ")}.`);
+      else lines.push("Arrivals: none recorded.");
+      if (context.departingToday?.length) lines.push(`Departures: ${context.departingToday.map(x => `${x.guest} (room ${x.room || "unassigned"})`).join(", ")}.`);
+      else lines.push("Departures: none recorded.");
+      if (context.departingWithBalance?.length) lines.push(`Outstanding for departing guests: ${context.departingWithBalance.map(x => `${x.guest} ${moneyShort(x.balance)}`).join(", ")}.`);
+      if (context.notReadyToSell?.length) lines.push(`Not ready to sell: ${context.notReadyToSell.map(x => `${x.room} (${x.status})`).join(", ")}.`);
+      else lines.push("All rooms are currently sellable.");
+      return lines.join("\n");
+    }
+    case "rooms_not_ready": {
+      const rows = context.rooms.filter(r => ["dirty","cleaning","maintenance"].includes(r.status));
+      if (!rows.length) return `${context.property}: all ${context.totalRooms} rooms are currently sellable.`;
+      return `${context.property} — ${rows.length} room(s) are not ready to sell:\n` + rows.map(r => `Room ${r.room} — ${r.type} — ${r.status}${r.note ? ` — ${r.note}` : ""}`).join("\n") + `\nSellable now: ${context.sellableNow} room(s).`;
+    }
+    case "pending_requests": {
+      if (!context.pending.length) return `${context.property}: no website booking requests are waiting.`;
+      return `${context.property} — pending website requests:\n` + context.pending.slice(0, 20).map(r => `${r.reference} — ${r.guest} — ${r.roomType} — ${r.checkIn} to ${r.checkOut} — ${r.canAcceptNow ? `${r.roomsFreeOfThatType} room(s) free` : "NO ROOM FREE"}`).join("\n");
+    }
+    case "occupancy_outlook": {
+      const ns = context.nights || [];
+      if (!ns.length) return `${context.property}: no 14-day occupancy data is available.`;
+      return `${context.property} — next 14 nights:\n` + ns.map(n => `${n.date}: ${n.occupancyPercent}% (${n.roomsSold}/${context.sellableRooms})`).join("\n");
+    }
+    case "unpaid_balances": {
+      if (!context.guests.length) return `${context.property}: nobody currently has an outstanding balance.`;
+      return `${context.property} — total outstanding: ${moneyShort(context.totalOutstanding)}\n` + context.guests.slice(0, 20).map(g => `${g.guest} — room ${g.room || "unassigned"} — ${moneyShort(g.balance)} — checkout ${g.checkOut}`).join("\n");
+    }
+    case "revenue_review": {
+      const top = Object.entries(context.byRoomType || {}).sort((a,b) => (b[1].revenue||0)-(a[1].revenue||0))[0];
+      return `${context.property} — last 30 days (${context.period.from} to ${context.period.to})\nOccupancy ${context.occupancyPercent}% | ADR ${moneyShort(context.averageDailyRate)} | RevPAR ${moneyShort(context.revPAR)}\nRoom revenue ${moneyShort(context.totalRoomRevenue)} | Facility revenue ${moneyShort(context.facilityRevenue?.total)} | Total ${moneyShort(context.totalRevenue)}\nTop room-type revenue: ${top ? `${top[0]} (${moneyShort(top[1].revenue)})` : "none"}.`;
+    }
+    case "compare_properties": {
+      const p=context.properties||{}; const a=p.exclusive,b=p.urban;
+      return `Last 30 days:\n${a.property}: occupancy ${a.occupancyPercent}%, ADR ${moneyShort(a.averageDailyRate)}, room revenue ${moneyShort(a.totalRoomRevenue)}.\n${b.property}: occupancy ${b.occupancyPercent}%, ADR ${moneyShort(b.averageDailyRate)}, room revenue ${moneyShort(b.totalRoomRevenue)}.`;
+    }
+    case "pricing_check": {
+      const rows=Object.entries(context.byRoomType||{}); if(!rows.length) return `${context.property}: there are no room-type pricing signals yet.`;
+      return `${context.property} — pricing signals from the last 30 days:\n` + rows.map(([type,v]) => `${type}: ${moneyShort(v.currentRate)} | occupancy ${v.occupancyPercent}% | ${v.occupancyPercent >= 80 ? "consider testing a higher rate" : v.occupancyPercent <= 25 ? "consider testing a lower rate or promotion" : "no strong pricing signal"}`).join("\n") + `\nThese signals use only this property's own booking history.`;
+    }
+    case "booking_sources": {
+      if (!context.sources.length) return `${context.property}: no bookings were recorded in the last 90 days.`;
+      return `${context.property} — booking sources, last 90 days:\n` + context.sources.map(s => `${s.source}: ${s.bookings} booking(s), ${s.sharePercent}% share, ${moneyShort(s.revenue)}`).join("\n");
+    }
+    case "repeat_guests": {
+      if (!context.guests.length) return "No guest has more than one stay yet.";
+      return `Regular guests:\n` + context.guests.slice(0, 20).map(g => `${g.name} — ${g.stays} stays, ${g.nights} nights, ${moneyShort(g.spend)}${g.stayedAtBothProperties ? " — stayed at both properties" : ""}`).join("\n");
+    }
+    default: return null;
+  }
+}
+
+async function runPreparedPrompt(promptId, question, user, history = []) {
+  const prompt = promptById(promptId);
+  if (!prompt) return { ok: false, text: "That assistant question is not configured." };
+  if (promptId === "explain_metric") {
+    const local = explainTerm(question || "hotel term");
+    const ai = await ask({ instruction: prompt.instruction, context: null, userQuestion: question || prompt.label, history });
+    return ai.ok ? { ok:true, text:ai.text, mode:"gemini" } : { ok:true, text:local, mode:"template" };
+  }
+  if (promptId === "command_help") return { ok:true, text:fallbackHelp(), mode:"template" };
+  const ctx = await preparedContext(promptId, user);
+  const direct = directPreparedAnswer(promptId, ctx);
+  if (!direct) return { ok:false, text:"That prepared question is not supported by the database yet." };
+  // Prefer Gemini for better wording, but deterministic DB answer is always the fallback.
+  const ai = await ask({ instruction: prompt.instruction, context: ctx, userQuestion: question || prompt.label, history });
+  return ai.ok ? { ok:true, text:ai.text, mode:"gemini", data:ctx } : { ok:true, text:direct, mode:"database", data:ctx };
+}
+
 async function runAgent({ question, user }) {
   const q = cleanText(question);
   if (!q) return { ok: false, text: "Type a question or use one of the command templates.\n\n" + fallbackHelp() };
@@ -682,6 +820,12 @@ async function runAgent({ question, user }) {
   if (!action) action = await classifyWithGemini(q);
   if (!action) return { ok: true, text: fallbackHelp(), mode: "template" };
 
+  if (action.type === "prepared") {
+    const prepared = await runPreparedPrompt(action.promptId, q, user, []);
+    return prepared;
+  }
+  if (action.type === "help") return { ok: true, text: fallbackHelp(), mode: "template", action };
+
   if (action.type === "availability" && (!action.checkIn || !action.checkOut)) {
     return { ok: true, text: fallbackForType("availability"), mode: "template" };
   }
@@ -693,4 +837,4 @@ async function runAgent({ question, user }) {
   return { ok: true, text: result.text, mode: result.mode || "database", action: action, data: result.data || null };
 }
 
-module.exports = { runAgent, fallbackHelp };
+module.exports = { runAgent, runPreparedPrompt, fallbackHelp };
