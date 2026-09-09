@@ -11,6 +11,7 @@ const SiteContent = require("../models/SiteContent");
 const FaqEntry = require("../models/FaqEntry");
 const { askPublic } = require("../services/gemini");
 const { settlePaidRequest } = require("../services/websiteBooking");
+const { notify } = require("../services/notify");
 
 /**
  * PUBLIC ENDPOINTS — no authentication.
@@ -202,6 +203,12 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
       req.app.get("io")?.to("loc:" + location).emit("request:new", {
         reference: doc.reference, guestName: doc.guestName, roomType: doc.roomType,
         checkIn: doc.checkIn, checkOut: doc.checkOut,
+      });
+      await notify(req.app, {
+        location, type: "request:new", urgent: true,
+        title: "New website request",
+        body: `${doc.guestName} · ${doc.checkIn} → ${doc.checkOut} · ${doc.reference}`,
+        entity: "BookingRequest", entityId: doc._id, href: "/requests",
       });
     }
 

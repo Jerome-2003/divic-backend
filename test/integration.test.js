@@ -37,7 +37,7 @@ for (const [path, mod] of [
   ["/api/analytics","../routes/analytics.routes"], ["/api/audit","../routes/audit.routes"],
   ["/api/ai","../routes/ai.routes"], ["/api/public","../routes/public.routes"],
   ["/api/notifications","../routes/notifications.routes"], ["/api/content","../routes/content.routes"],
-  ["/api/webhooks","../routes/webhook.routes"],
+  ["/api/webhooks","../routes/webhook.routes"], ["/api/todos","../routes/todos.routes"],
 ]) {
   try { app.use(path, require(mod)); check(path, true); }
   catch (e) { check(path, false, e.message); }
@@ -45,7 +45,7 @@ for (const [path, mod] of [
 
 console.log("\n=== Models compile ===");
 for (const m of ["User","Room","Rate","Guest","Booking","BookingRequest","Payment","Charge",
-                 "Facility","AuditLog","FailedWrite","Notification","SiteContent","FaqEntry"]) {
+                 "Facility","AuditLog","FailedWrite","Notification","SiteContent","FaqEntry","Todo"]) {
   try { require("../models/" + m); check(m, true); }
   catch (e) { check(m, false, e.message); }
 }
@@ -103,6 +103,9 @@ check("facility staff cannot reach guests", !PERMISSIONS.facility.includes("gues
 check("facility staff cannot publish to the website", !PERMISSIONS.facility.includes("content"));
 check("receptionist cannot see revenue", !PERMISSIONS.receptionist.includes("analytics"));
 check("receptionist cannot publish to the website", !PERMISSIONS.receptionist.includes("content"));
+check("receptionist can use the shared to-do list", PERMISSIONS.receptionist.includes("todos"));
+check("cleaner can use the shared to-do list", PERMISSIONS.cleaner.includes("todos"));
+check("facility staff can use the shared to-do list", PERMISSIONS.facility.includes("todos"));
 check("manager can publish to the website", PERMISSIONS.manager.includes("content"));
 check("owner can publish to the website", PERMISSIONS.owner.includes("content"));
 

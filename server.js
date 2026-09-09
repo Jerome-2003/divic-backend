@@ -46,7 +46,7 @@ app.use(cors({
 // bytes, and a parsed-then-restringified body will not match it.
 app.use("/api/webhooks", require("./routes/webhook.routes"));
 
-app.use(express.json({ limit: "200kb" }));
+app.use(express.json({ limit: "12mb" }));
 app.set("trust proxy", 1);
 
 // Real-time sync. Staff join a room per property so a change at Divic Urban
@@ -74,6 +74,7 @@ app.use("/api/audit", require("./routes/audit.routes"));
 app.use("/api/ai", require("./routes/ai.routes"));
 app.use("/api/notifications", require("./routes/notifications.routes"));
 app.use("/api/content", require("./routes/content.routes"));
+app.use("/api/todos", require("./routes/todos.routes"));
 app.use("/api/public", require("./routes/public.routes"));
 
 app.use(notFound);

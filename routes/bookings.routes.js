@@ -134,6 +134,67 @@ router.post("/", scopeLocation, requireOperational("receptionist"), async (req, 
   } catch (e) { next(e); } finally { session.endSession(); }
 });
 
+router.patch("/:id/dates", requireOperational("receptionist"), async (req, res, next) => {
+  try {
+    const { checkIn, checkOut, reason } = req.body || {};
+    const booking = await Booking.findById(req.params.id).populate("guest", "name");
+    if (!booking) return res.status(404).json({ error: "That booking does not exist." });
+    if (req.user.location !== "all" && booking.location !== req.user.location) {
+      return res.status(403).json({ error: "You can only work on your own property." });
+    }
+    if (["checked-out", "cancelled", "no-show"].includes(booking.status)) {
+      return res.status(409).json({ error: "A booking that is " + booking.status + " cannot have its dates changed." });
+    }
+
+    const nextIn = checkIn || booking.checkIn;
+    const nextOut = checkOut || booking.checkOut;
+    const bad = validRange(nextIn, nextOut);
+    if (bad) return res.status(400).json({ error: bad });
+
+    // Once the guest is already in-house, their arrival date is historical and
+    // must stay fixed. Only the departure date can move forward.
+    if (booking.status === "in-house" && nextIn !== booking.checkIn) {
+      return res.status(409).json({ error: "An in-house guest's arrival date cannot be changed. Extend or shorten the departure date instead." });
+    }
+
+    const todayStr = today();
+    if (booking.status === "confirmed" && nextIn < todayStr) {
+      return res.status(400).json({ error: "Arrival date cannot be moved into the past." });
+    }
+    if (booking.status === "in-house" && nextOut <= todayStr) {
+      return res.status(400).json({ error: "An in-house guest needs a departure date after today." });
+    }
+
+    const roomFree = booking.roomNumber
+      ? await isRoomAvailable(booking.location, booking.roomNumber, nextIn, nextOut, booking._id)
+      : true;
+    if (!roomFree) {
+      return res.status(409).json({ error: "The guest's current room is already committed for part of those dates." });
+    }
+
+    const previous = { checkIn: booking.checkIn, checkOut: booking.checkOut, nights: booking.nights, totalCharge: booking.totalCharge };
+    booking.checkIn = nextIn;
+    booking.checkOut = nextOut;
+    booking.nights = nightsBetween(nextIn, nextOut);
+    booking.totalCharge = booking.rate * booking.nights;
+    booking.dateChanges.push({
+      fromCheckIn: previous.checkIn, fromCheckOut: previous.checkOut,
+      toCheckIn: nextIn, toCheckOut: nextOut, reason: reason?.trim(), by: req.user.id,
+    });
+    await booking.save();
+
+    logAction(req, {
+      action: "Changed dates for " + booking.guest.name + " (" + booking.ref + ") from " +
+        previous.checkIn + " → " + previous.checkOut + " to " + nextIn + " → " + nextOut +
+        (reason ? " — " + reason : ""),
+      entity: "Booking", entityId: booking._id, location: booking.location,
+      before: previous, after: { checkIn: nextIn, checkOut: nextOut, nights: booking.nights, totalCharge: booking.totalCharge },
+    });
+    req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);
+    res.json(booking);
+  } catch (e) { next(e); }
+});
+
 router.post("/:id/check-in", requireOperational("receptionist"), async (req, res, next) => {
   try {
     const booking = await Booking.findById(req.params.id).populate("guest", "name");

@@ -66,8 +66,8 @@ router.post("/", async (req, res, next) => {
     if (req.user.role === "manager" && !["receptionist", "cleaner", "facility"].includes(role)) {
       return res.status(403).json({ error: "Only the owner can create manager or owner accounts." });
     }
-    if (location === "all" && !["manager", "owner"].includes(role)) {
-      return res.status(400).json({ error: "Only managers and owners can cover both properties." });
+    if (location === "all" && !["manager", "owner", "receptionist"].includes(role)) {
+      return res.status(400).json({ error: "Managers, owners, and receptionists can cover both properties." });
     }
 
     let assigned = [];
@@ -153,8 +153,8 @@ router.patch("/:id", async (req, res, next) => {
     // change in one request — without this, editing a manager down to
     // receptionist leaves location "all" behind and scopeLocation then lets
     // them read both properties.
-    if (user.location === "all" && !["manager", "owner"].includes(user.role)) {
-      return res.status(400).json({ error: "Only managers and owners can cover both properties." });
+    if (user.location === "all" && !["manager", "owner", "receptionist"].includes(user.role)) {
+      return res.status(400).json({ error: "Managers, owners, and receptionists can cover both properties." });
     }
 
     // Validate the assignment against whatever role and property the account

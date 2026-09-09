@@ -80,13 +80,13 @@ const CHARGE_SETTLEMENTS = ["room", "paid"];
 // What each role may reach. Enforced server-side on every route — the frontend
 // copy of this map is convenience, not security.
 const PERMISSIONS = {
-  owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications"],
-  manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications"],
+  owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications","todos"],
+  manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications","todos"],
   receptionist: ["dashboard","bookings","frontdesk","rooms","guests","billing","ai","notifications"],
-  cleaner:      ["rooms","notifications","ai"],
+  cleaner:      ["rooms","notifications","ai","todos"],
   // Facility staff can use the assistant for facility, till and operational questions;
   // the agent itself enforces what records this role can see.
-  facility:     ["facilities","pos","notifications","ai"],
+  facility:     ["facilities","pos","notifications","ai","todos"],
 };
 
 module.exports = {

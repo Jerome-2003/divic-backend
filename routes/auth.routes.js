@@ -67,6 +67,11 @@ router.post("/login", loginLimiter, async (req, res, next) => {
       return res.status(403).json({ error: "This account has been deactivated. Speak to your manager." });
     }
 
+    // Reception is intentionally cross-property. Persist the upgrade for
+    // existing receptionist accounts so the rule applies immediately instead
+    // of depending on an administrator editing every account by hand.
+    if (user.role === "receptionist" && user.location !== "all") user.location = "all";
+
     // A successful sign-in clears the failed-attempt counter.
     user.failedLoginAttempts = 0;
     user.loginLockedAt = undefined;
