@@ -83,10 +83,10 @@ const PERMISSIONS = {
   owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications"],
   manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications"],
   receptionist: ["dashboard","bookings","frontdesk","rooms","guests","billing","ai","notifications"],
-  cleaner:      ["rooms","notifications"],
-  // Bartenders, restaurant and pool staff. Their facilities and their till,
-  // nothing else — no dashboard, no bookings, no guests list, no assistant.
-  facility:     ["facilities","pos","ai","notifications"],
+  cleaner:      ["rooms","notifications","ai"],
+  // Facility staff can use the assistant for facility, till and operational questions;
+  // the agent itself enforces what records this role can see.
+  facility:     ["facilities","pos","notifications","ai"],
 };
 
 module.exports = {

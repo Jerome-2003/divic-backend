@@ -140,23 +140,64 @@ async function auditSearch(term, user) {
 
 function fallbackHelp() {
   return [
-    "You can type normal questions. For exact lookups, these commands always work:",
+    "You can type normal questions. The common hotel questions below are answered directly from the PMS without Gemini:",
     "",
     "Daily running",
     "What needs my attention today?",
+    "Who is arriving today?",
+    "Who is checking out today?",
+    "Who is currently staying here?",
+    "How full are we today?",
     "Which rooms aren't ready to sell?",
     "What website requests are waiting?",
     "How full are the next two weeks?",
+    "What bookings are coming up?",
+    "What alerts need attention?",
+    "Who are the no-shows?",
+    "What bookings were cancelled?",
     "",
     "Money",
     "Who still owes money?",
     "How did the last 30 days go?",
+    "How much did we make today?",
+    "How were we paid today?",
+    "How much did each facility make?",
+    "What payments came in recently?",
+    "How much are payment fees costing us?",
     "How do the two properties compare?",
     "Are my rates right?",
     "",
     "Guests",
     "Where are bookings coming from?",
     "Who are my regulars?",
+    "How many guests do we have?",
+    "Are any guests blacklisted?",
+    "",
+    "Rooms",
+    "How many rooms do we have?",
+    "Which rooms are available now?",
+    "What is the room status breakdown?",
+    "Which rooms are dirty?",
+    "Which rooms are being cleaned?",
+    "Which rooms are under maintenance?",
+    "Which rooms are occupied?",
+    "What are our current room rates?",
+    "What room types are available for a stay?",
+    "",
+    "Facilities",
+    "Which facilities are open?",
+    "How much did the facilities sell today?",
+    "What charges were posted at a facility today?",
+    "",
+    "Website",
+    "What is the status of website requests?",
+    "What is currently published on the website?",
+    "What information can the hotel FAQ answer?",
+    "",
+    "Staff and audit",
+    "Who is on the staff?",
+    "How many staff do we have by role?",
+    "What changed recently?",
     "",
     "Learning",
     "Explain a hotel term",
@@ -174,7 +215,7 @@ function fallbackHelp() {
     "ANALYTICS - TOPIC: ___",
     "AVAILABILITY - ROOM TYPE: ___ - CHECK-IN: YYYY-MM-DD - CHECK-OUT: YYYY-MM-DD",
     "",
-    "You can also type a booking reference, room number or guest's full name by itself.",
+    "You can also type a booking reference, room number or a guest's full name by itself.",
   ].join("\n");
 }
 
@@ -526,6 +567,38 @@ function inferDirect(question) {
   const lq = lower(q);
   let m;
 
+  if (/upcoming bookings?|bookings? coming up|next few days.*bookings?/i.test(q)) return { type: "prepared", promptId: "upcoming_bookings" };
+  if (/dirty rooms?|rooms?.*dirty/i.test(q)) return { type: "prepared", promptId: "dirty_rooms" };
+  if (/cleaning rooms?|rooms?.*being cleaned/i.test(q)) return { type: "prepared", promptId: "cleaning_rooms" };
+  if (/maintenance rooms?|rooms?.*under maintenance|out of order rooms?/i.test(q)) return { type: "prepared", promptId: "maintenance_rooms" };
+  if (/occupied rooms?/i.test(q) && !/occupancy/i.test(q)) return { type: "prepared", promptId: "occupied_rooms" };
+  if (/^(?:who|which).*arriv.*today|today.*arrivals?/i.test(q)) return { type: "prepared", promptId: "arrivals_today" };
+  if (/(?:who|which).*check.*out.*today|today.*departures?/i.test(q)) return { type: "prepared", promptId: "departures_today" };
+  if (/(?:who|which).*currently.*(?:staying|in[- ]house)|in[- ]house.*guests?/i.test(q)) return { type: "prepared", promptId: "in_house_guests" };
+  if (/(?:how full.*today|today.*occupancy|occupancy.*today)/i.test(q)) return { type: "prepared", promptId: "occupancy_today" };
+  if (/(?:urgent|important).*alerts?|alerts?.*attention|notifications?.*attention/i.test(q)) return { type: "prepared", promptId: "urgent_notifications" };
+  if (/(?:unread).*notifications?|notifications?.*unread/i.test(q)) return { type: "prepared", promptId: "unread_notifications" };
+  if (/(?:no[- ]shows?|didn.?t show)/i.test(q)) return { type: "prepared", promptId: "no_shows" };
+  if (/(?:cancell?ed bookings?|cancellations?)/i.test(q)) return { type: "prepared", promptId: "cancellations" };
+  if (/(?:how much|what).*?(?:make|sales|sold|collected).*today|today.*(?:sales|revenue|collections?)/i.test(q)) return { type: "prepared", promptId: "sales_today" };
+  if (/(?:payment|paid).*?(?:method|cash|pos|transfer).*today/i.test(q)) return { type: "prepared", promptId: "payment_methods" };
+  if (/facility.*(?:make|sales|revenue|takings?).*today/i.test(q)) return { type: "prepared", promptId: "facility_sales_today" };
+  if (/(?:recent|latest).*payments?|payments?.*recent/i.test(q)) return { type: "prepared", promptId: "recent_payments" };
+  if (/(?:payment|paystack).*fees?|fees?.*payment/i.test(q)) return { type: "prepared", promptId: "payment_fees" };
+  if (/(?:how many|number of).*guests?|guest.*count/i.test(q)) return { type: "prepared", promptId: "guest_count" };
+  if (/blacklist|blacklisted/i.test(q)) return { type: "prepared", promptId: "blacklisted_guests" };
+  if (/(?:how many|number of).*rooms?|room inventory|room count/i.test(q)) return { type: "prepared", promptId: "room_inventory" };
+  if (/(?:available|free).*rooms?.*(?:now|today)?$/i.test(q)) return { type: "prepared", promptId: "available_rooms_now" };
+  if (/(?:room status|status.*rooms?|breakdown.*rooms?)/i.test(q)) return { type: "prepared", promptId: "room_status_counts" };
+  if (/(?:current|today.?s?).*rates?|(?:what are|show).*room rates?/i.test(q)) return { type: "prepared", promptId: "current_rates" };
+  if (/(?:which|what).*facilit(?:y|ies).*(?:open|closed|maintenance|hours)|facility status|are.*(?:pool|gym|bar|restaurant).*open/i.test(q)) return { type: "prepared", promptId: "facility_status" };
+  if (/(?:website|booking) requests?.*(?:status|how many|count)|request.*status/i.test(q)) return { type: "prepared", promptId: "request_summary" };
+  if (/(?:what.*published|what.*live).*website|website.*content/i.test(q)) return { type: "prepared", promptId: "published_content" };
+  if (/(?:faq|frequently asked).*?(?:available|answer|questions?)/i.test(q)) return { type: "prepared", promptId: "faq_knowledge" };
+  if (/(?:who|what).*staff|employees?|team members?/i.test(q)) return { type: "prepared", promptId: "staff_overview" };
+  if (/(?:how many).*staff|staff.*(?:by role|breakdown)/i.test(q)) return { type: "prepared", promptId: "staff_by_role" };
+  if (/(?:what changed|recent changes|recent activity|audit)/i.test(q)) return { type: "prepared", promptId: "audit_recent" };
+
   if (/^what needs (my )?attention today\??$/i.test(q) || /what.*needs.*attention.*today/i.test(q)) return { type: "prepared", promptId: "today_briefing" };
   if (/^which rooms (?:are )?not ready to sell\??$/i.test(q) || /rooms?.*(?:not ready|not sellable|cannot be sold|out of service)/i.test(q)) return { type: "prepared", promptId: "rooms_not_ready" };
   if (/^what website requests are waiting\??$/i.test(q) || /pending website (?:requests|bookings?)/i.test(q)) return { type: "prepared", promptId: "pending_requests" };
@@ -718,11 +791,19 @@ function explainTerm(question) {
   return "Common hotel terms: Occupancy = how full the rooms are. ADR = average room rate actually sold. RevPAR = room revenue divided by all available room nights. Ask about a specific term such as occupancy, ADR, RevPAR or folio.";
 }
 
-async function preparedContext(promptId, user) {
+async function preparedContext(promptId, user, requestedLocation) {
   const prompt = promptById(promptId);
   if (!prompt) return null;
-  const location = prompt.scope === "both" ? null : (user.location === "all" ? null : user.location);
-  return prompt.context === "none" ? null : buildContext(prompt.context, location);
+  if (prompt.context === "none") return null;
+  if (prompt.context.startsWith("roomStatusDetail:")) {
+    const status = prompt.context.split(":")[1];
+    const location = user.location === "all" ? (ALL_PROPS.includes(requestedLocation) ? requestedLocation : "exclusive") : user.location;
+    return require("./aiContext").BUILDERS.roomStatusDetail(location, status);
+  }
+  const location = prompt.scope === "both"
+    ? null
+    : (user.location === "all" ? (ALL_PROPS.includes(requestedLocation) ? requestedLocation : "exclusive") : user.location);
+  return buildContext(prompt.context, location, user.id);
 }
 
 function directPreparedAnswer(promptId, context) {
@@ -774,32 +855,115 @@ function directPreparedAnswer(promptId, context) {
       if (!context.sources.length) return `${context.property}: no bookings were recorded in the last 90 days.`;
       return `${context.property} — booking sources, last 90 days:\n` + context.sources.map(s => `${s.source}: ${s.bookings} booking(s), ${s.sharePercent}% share, ${moneyShort(s.revenue)}`).join("\n");
     }
+    case "upcoming_bookings": {
+      if (!context.bookings.length) return `${context.property}: no bookings start in the next 7 days.`;
+      return `${context.property} — upcoming bookings:\n` + context.bookings.map(b => `${b.checkIn} — ${b.ref} — ${b.guest} — room ${b.room || "unassigned"} — ${b.type} — ${b.checkOut}`).join("\n");
+    }
+    case "dirty_rooms":
+    case "cleaning_rooms":
+    case "maintenance_rooms":
+    case "occupied_rooms": {
+      if (!context.rooms.length) return `${context.property}: no rooms match status ${context.status}.`;
+      return `${context.property} — ${context.status} rooms (${context.count}): ` + context.rooms.map(r => `${r.number} (${r.type})`).join(", ");
+    }
     case "repeat_guests": {
       if (!context.guests.length) return "No guest has more than one stay yet.";
       return `Regular guests:\n` + context.guests.slice(0, 20).map(g => `${g.name} — ${g.stays} stays, ${g.nights} nights, ${moneyShort(g.spend)}${g.stayedAtBothProperties ? " — stayed at both properties" : ""}`).join("\n");
     }
+    case "arrivals_today": {
+      if (!context.arrivals.length) return `${context.property}: no arrivals are scheduled for today.`;
+      return `${context.property} — arrivals today:\n` + context.arrivals.map(a => `${a.ref} — ${a.guest} — room ${a.room || "unassigned"} — ${a.type} — checkout ${a.checkOut} — ${a.nights} night(s) — ${a.source}`).join("\n");
+    }
+    case "departures_today": {
+      if (!context.departures.length) return `${context.property}: no in-house departures are scheduled for today.`;
+      return `${context.property} — departures today:\n` + context.departures.map(d => `${d.ref} — ${d.guest} — room ${d.room || "unassigned"} — balance ${moneyShort(d.balance)}`).join("\n");
+    }
+    case "in_house_guests": {
+      if (!context.guests.length) return `${context.property}: nobody is currently checked in.`;
+      return `${context.property} — in-house guests:\n` + context.guests.map(g => `Room ${g.room || "unassigned"} — ${g.guest} — ${g.type} — ${g.ref} — checkout ${g.checkOut}`).join("\n");
+    }
+    case "occupancy_today":
+      return `${context.property}: ${context.occupiedRooms}/${context.totalSellableRooms} sellable rooms occupied — ${context.occupancyPercent}% occupancy. ${context.availableSellableRooms} sellable room(s) available.`;
+    case "urgent_notifications": {
+      const notes = context.notifications || [];
+      const urgent = notes.filter(n => n.urgent);
+      if (!urgent.length) return `${context.property}: there are no urgent notifications in the recent alerts.`;
+      return `${context.property} — urgent alerts:\n` + urgent.map(n => `${n.title}${n.body ? ` — ${n.body}` : ""}`).join("\n");
+    }
+    case "unread_notifications":
+      return `${context.property}: ${context.unread} unread notification(s) for you.` + (context.notifications?.length ? `\nRecent: ${context.notifications.slice(0, 8).map(n => n.title).join("; ")}` : "");
+    case "no_shows": {
+      const rows = (context.rows || []).filter(r => r.status === "no-show");
+      return rows.length ? `${context.property} — no-shows:\n` + rows.map(r => `${r.ref} — ${r.guest} — ${r.checkIn} — ${r.room || "unassigned"}`).join("\n") : `${context.property}: no no-shows found.`;
+    }
+    case "cancellations": {
+      const rows = (context.rows || []).filter(r => r.status === "cancelled");
+      return rows.length ? `${context.property} — cancelled bookings:\n` + rows.map(r => `${r.ref} — ${r.guest} — ${r.checkIn} to ${r.checkOut}${r.cancelReason ? ` — ${r.cancelReason}` : ""}`).join("\n") : `${context.property}: no cancellations found today.`;
+    }
+    case "sales_today":
+      return `${context.property} — today: room sales ${moneyShort(context.roomSalesToday)}, facility sales ${moneyShort(context.facilitySalesToday)}, total ${moneyShort(context.totalSalesToday)} from ${context.paymentsCollectedToday} payment(s).`;
+    case "payment_methods":
+      return `${context.property} — today's payments by method: ` + Object.entries(context.byMethod || {}).map(([m,v]) => `${m} ${moneyShort(v)}`).join(", ");
+    case "facility_revenue":
+      return `${context.property} — facility revenue, last 30 days:\n` + Object.entries(context.byFacility || {}).map(([name,v]) => `${name}: ${moneyShort(v.total)} (${v.charges} charge(s))`).join("\n");
+    case "facility_sales_today":
+    case "facility_charges_today":
+      return `${context.property} — facility sales today:\n` + context.byFacility.map(f => `${f.name}: ${moneyShort(f.revenue)} — room ${moneyShort(f.chargedToRooms)}, till ${moneyShort(f.paidAtTill)}, ${f.charges} charge(s)`).join("\n");
+    case "recent_payments":
+      return context.payments.length ? `${context.property} — recent payments:\n` + context.payments.map(p => `${p.reference} — ${moneyShort(p.amount)} — ${p.method} — ${p.verified ? "verified" : "recorded"}${p.voided ? " — VOIDED" : ""}${p.facility ? ` — ${p.facility}` : ""}`).join("\n") : `${context.property}: no payments found.`;
+    case "payment_fees":
+      return `${context.property} — last 30 days: ${moneyShort(context.totalFees)} in payment fees. Gross ${moneyShort(context.gross)}, net ${moneyShort(context.net)}.`;
+    case "guest_count":
+      return `${context.property}: ${context.totalGuestRecords} guest records in the database; ${context.currentInHouseGuests} guest(s) currently in house.`;
+    case "blacklisted_guests":
+      return context.blacklisted.length ? `${context.property} — blacklisted guests:\n${context.blacklisted.join("\n")}` : `${context.property}: no blacklisted guests are recorded.`;
+    case "room_inventory":
+    case "room_status_counts":
+      return `${context.property}: ${context.totalRooms} rooms. By status: ` + Object.entries(context.byStatus).map(([s,c]) => `${s} ${c}`).join(", ") + ". By type: " + Object.entries(context.byType).map(([t,v]) => `${t} ${v.total}`).join(", ") + ".";
+    case "available_rooms_now":
+      return context.count ? `${context.property} — available now (${context.count}): ` + context.rooms.map(r => `${r.number} (${r.type})`).join(", ") : `${context.property}: no rooms are currently marked available.`;
+    case "current_rates":
+      return `${context.property} — current nightly rates:\n` + Object.entries(context.rates).map(([t,v]) => `${t}: ${moneyShort(v)}`).join("\n");
+    case "facility_status":
+      return `${context.property} — facilities:\n` + context.facilities.map(f => `${f.name}: ${f.status}${f.statusNote ? ` — ${f.statusNote}` : ""}${f.openingHours ? ` — ${f.openingHours}` : ""}`).join("\n");
+    case "request_summary":
+      return `${context.property}: ${context.total} website request(s). ` + Object.entries(context.counts).map(([s,c]) => `${s} ${c}`).join(", ");
+    case "published_content":
+      return context.content.length ? `${context.property} — live website content:\n` + context.content.map(c => `${c.type}: ${c.title}${c.body ? ` — ${c.body}` : ""}`).join("\n") : `${context.property}: no website content is currently live.`;
+    case "faq_knowledge":
+      return `${context.property}: ${context.total} active FAQ answers across ${Object.keys(context.categories).length} categories.\n` + Object.entries(context.categories).map(([c,qs]) => `${c}: ${qs.slice(0,4).join(" | ")}`).join("\n");
+    case "staff_overview":
+      return context.staff.length ? `Staff:\n` + context.staff.map(u => `${u.name} — ${u.role} — ${u.location} — ${u.active ? "active" : "inactive"}`).join("\n") : "No staff records found.";
+    case "staff_by_role": {
+      const grouped = {};
+      context.staff.forEach(u => { const k = `${u.location} / ${u.role}`; grouped[k] = grouped[k] || {active:0,inactive:0}; grouped[k][u.active ? "active" : "inactive"]++; });
+      return `Staff counts:\n` + Object.entries(grouped).map(([k,v]) => `${k}: ${v.active} active, ${v.inactive} inactive`).join("\n");
+    }
+    case "audit_recent":
+      return context.entries.length ? `Recent audit actions:\n` + context.entries.map(e => `${new Date(e.at).toLocaleString("en-NG")} — ${e.userName || "System"} — ${e.action}`).join("\n") : "No audit entries found.";
     default: return null;
   }
 }
 
-async function runPreparedPrompt(promptId, question, user, history = []) {
+async function runPreparedPrompt(promptId, question, user, history = [], requestedLocation = null) {
   const prompt = promptById(promptId);
   if (!prompt) return { ok: false, text: "That assistant question is not configured." };
-  if (promptId === "explain_metric") {
-    const local = explainTerm(question || "hotel term");
-    const ai = await ask({ instruction: prompt.instruction, context: null, userQuestion: question || prompt.label, history });
-    return ai.ok ? { ok:true, text:ai.text, mode:"gemini" } : { ok:true, text:local, mode:"template" };
+  if (promptId === "explain_metric") return { ok: true, text: explainTerm(question || "hotel term"), mode: "template" };
+  if (promptId === "command_help") return { ok: true, text: fallbackHelp(), mode: "template" };
+  if (promptId === "availability_by_type") {
+    const m = String(question || "").match(/(?:from|check-?in)\s*[:=-]?\s*(\d{4}-\d{2}-\d{2}).*?(?:to|check-?out)\s*[:=-]?\s*(\d{4}-\d{2}-\d{2})/i);
+    const type = (String(question || "").match(/(?:room\s*type|type)\s*[:=-]\s*([a-z0-9 _-]+)/i) || [])[1]?.trim();
+    if (!m) return { ok:true, text:fallbackForType("availability"), mode:"template" };
+    const result = await availabilitySearch({ roomType:type, checkIn:m[1], checkOut:m[2], location: requestedLocation }, user);
+    return { ok:true, text:result.text, mode:"database", data:result.data || null };
   }
-  if (promptId === "command_help") return { ok:true, text:fallbackHelp(), mode:"template" };
-  const ctx = await preparedContext(promptId, user);
+  const ctx = await preparedContext(promptId, user, requestedLocation);
   const direct = directPreparedAnswer(promptId, ctx);
   if (!direct) return { ok:false, text:"That prepared question is not supported by the database yet." };
-  // Prefer Gemini for better wording, but deterministic DB answer is always the fallback.
-  const ai = await ask({ instruction: prompt.instruction, context: ctx, userQuestion: question || prompt.label, history });
-  return ai.ok ? { ok:true, text:ai.text, mode:"gemini", data:ctx } : { ok:true, text:direct, mode:"database", data:ctx };
+  return { ok:true, text:direct, mode:"database", data:ctx };
 }
 
-async function runAgent({ question, user }) {
+async function runAgent({ question, user, location }) {
   const q = cleanText(question);
   if (!q) return { ok: false, text: "Type a question or use one of the command templates.\n\n" + fallbackHelp() };
   if (q.length > 500) return { ok: false, text: "Keep the question under 500 characters." };
@@ -821,7 +985,7 @@ async function runAgent({ question, user }) {
   if (!action) return { ok: true, text: fallbackHelp(), mode: "template" };
 
   if (action.type === "prepared") {
-    const prepared = await runPreparedPrompt(action.promptId, q, user, []);
+    const prepared = await runPreparedPrompt(action.promptId, q, user, [], location);
     return prepared;
   }
   if (action.type === "help") return { ok: true, text: fallbackHelp(), mode: "template", action };

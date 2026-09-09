@@ -13,6 +13,11 @@ const Facility = require("../models/Facility");
 const Charge = require("../models/Charge");
 const Guest = require("../models/Guest");
 const BookingRequest = require("../models/BookingRequest");
+const Payment = require("../models/Payment");
+const User = require("../models/User");
+const FaqEntry = require("../models/FaqEntry");
+const SiteContent = require("../models/SiteContent");
+const Notification = require("../models/Notification");
 const Rate = require("../models/Rate");
 const { LOCATIONS } = require("../utils/constants");
 const { findAvailableRooms, nightsBetween } = require("./availability");
@@ -115,7 +120,7 @@ async function outstandingBalances(location) {
 }
 
 /** Facility takings over a period. Never mixed into ADR or RevPAR. */
-async function facilityRevenue(location, from) {
+async function facilityRevenue(location, from = shift(today(), -30)) {
   const rows = await Charge.aggregate([
     { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
     { $group: {
@@ -299,17 +304,224 @@ async function forwardOccupancy(location) {
   return { property: LOCATIONS[location].name, sellableRooms: roomCount, nights };
 }
 
+
+
+async function todaySales(location) {
+  const start = new Date(today() + "T00:00:00.000Z");
+  const payments = await Payment.find({ location, voided: false, createdAt: { $gte: start } })
+    .populate("facility", "name").lean();
+  const byMethod = {};
+  let roomSales = 0, facilitySales = 0;
+  for (const p of payments) {
+    const net = p.netAmount != null ? p.netAmount : p.amount;
+    byMethod[p.method] = (byMethod[p.method] || 0) + net;
+    if (p.facility) facilitySales += net; else roomSales += net;
+  }
+  return {
+    property: LOCATIONS[location].name, date: today(), currency: "NGN",
+    roomSalesToday: roomSales, facilitySalesToday: facilitySales,
+    totalSalesToday: roomSales + facilitySales,
+    paymentsCollectedToday: payments.length,
+    byMethod,
+  };
+}
+
+async function facilityRevenueToday(location) {
+  const start = new Date(today() + "T00:00:00.000Z");
+  const rows = await Charge.aggregate([
+    { $match: { location, voided: false, createdAt: { $gte: start } } },
+    { $group: { _id: { facility: "$facility", settlement: "$settlement" }, total: { $sum: "$amount" }, count: { $sum: 1 } } },
+  ]);
+  const facilities = await Facility.find({ location }).select("name type").sort({ name: 1 }).lean();
+  const byFacility = facilities.map(f => {
+    const mine = rows.filter(r => String(r._id.facility) === String(f._id));
+    const room = mine.find(r => r._id.settlement === "room");
+    const paid = mine.find(r => r._id.settlement === "paid");
+    return { name: f.name, type: f.type, chargedToRooms: room?.total || 0, paidAtTill: paid?.total || 0,
+      revenue: (room?.total || 0) + (paid?.total || 0), charges: (room?.count || 0) + (paid?.count || 0) };
+  });
+  return { property: LOCATIONS[location].name, date: today(), byFacility,
+    total: byFacility.reduce((s, f) => s + f.revenue, 0) };
+}
+
+async function recentPayments(location) {
+  const rows = await Payment.find({ location }).sort({ createdAt: -1 }).limit(30)
+    .populate("facility", "name").lean();
+  return { property: LOCATIONS[location].name, payments: rows.map(p => ({
+    reference: p.paystackReference || String(p._id), amount: p.amount,
+    netAmount: p.netAmount != null ? p.netAmount : p.amount, method: p.method,
+    verified: !!p.verified, voided: !!p.voided, facility: p.facility?.name || null,
+    bookingId: p.booking ? String(p.booking) : null, createdAt: p.createdAt,
+  })) };
+}
+
+async function paymentFees(location) {
+  const from = shift(today(), -30);
+  const rows = await Payment.aggregate([
+    { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
+    { $group: { _id: "$method", fees: { $sum: { $ifNull: ["$feeAmount", 0] } }, gross: { $sum: "$amount" }, net: { $sum: { $ifNull: ["$netAmount", "$amount"] } }, count: { $sum: 1 } } },
+  ]);
+  return { property: LOCATIONS[location].name, period: { from, to: today(), days: 30 }, byMethod: rows,
+    totalFees: rows.reduce((s, r) => s + (r.fees || 0), 0),
+    gross: rows.reduce((s, r) => s + (r.gross || 0), 0),
+    net: rows.reduce((s, r) => s + (r.net || 0), 0) };
+}
+
+async function arrivalsToday(location) {
+  const t = today();
+  const rows = await Booking.find({ location, status: "confirmed", checkIn: t })
+    .populate("guest", "name").sort({ roomNumber: 1, createdAt: 1 }).lean();
+  return { property: LOCATIONS[location].name, date: t, arrivals: rows.map(b => ({
+    ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
+    checkOut: b.checkOut, nights: b.nights, source: b.source, adults: b.adults, children: b.children,
+  })) };
+}
+
+async function departuresToday(location) {
+  const t = today();
+  const rows = await Booking.find({ location, status: "in-house", checkOut: t })
+    .populate("guest", "name").sort({ roomNumber: 1 }).lean();
+  const folios = await foliosFor(rows);
+  return { property: LOCATIONS[location].name, date: t, departures: rows.map(b => {
+    const f = folios[String(b._id)];
+    return { ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
+      checkIn: b.checkIn, balance: f?.balance || 0, paid: f?.paid || 0 };
+  }) };
+}
+
+async function inHouseGuests(location) {
+  const rows = await Booking.find({ location, status: "in-house" }).populate("guest", "name").sort({ roomNumber: 1 }).lean();
+  return { property: LOCATIONS[location].name, guests: rows.map(b => ({
+    ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
+    checkIn: b.checkIn, checkOut: b.checkOut, nights: b.nights,
+  })) };
+}
+
+async function todayOccupancy(location) {
+  const rooms = await Room.find({ location, status: { $ne: "maintenance" } }).lean();
+  const occupied = await Booking.countDocuments({ location, status: "in-house" });
+  return { property: LOCATIONS[location].name, totalSellableRooms: rooms.length, occupiedRooms: occupied,
+    availableSellableRooms: Math.max(rooms.length - occupied, 0), occupancyPercent: rooms.length ? Math.round(occupied / rooms.length * 100) : 0 };
+}
+
+async function bookingStatusesToday(location) {
+  const t = today();
+  const rows = await Booking.find({ location, $or: [
+    { status: "no-show" },
+    { status: "cancelled", cancelledAt: { $gte: new Date(t + "T00:00:00.000Z") } },
+  ] }).populate("guest", "name").sort({ updatedAt: -1 }).limit(50).lean();
+  return { property: LOCATIONS[location].name, date: t, rows: rows.map(b => ({
+    ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
+    checkIn: b.checkIn, checkOut: b.checkOut, status: b.status, cancelReason: b.cancelReason || null,
+  })) };
+}
+
+async function guestStats(location) {
+  const guests = await Guest.find({}).select("name blacklisted").lean();
+  const inHouseBookings = await Booking.find({ location, status: "in-house" }).select("guest").lean();
+  const byGuest = new Set(inHouseBookings.map(b => String(b.guest)));
+  return { property: LOCATIONS[location].name, totalGuestRecords: guests.length,
+    currentInHouseGuests: byGuest.size, blacklisted: guests.filter(g => g.blacklisted).map(g => g.name) };
+}
+
+async function roomInventory(location) {
+  const rooms = await Room.find({ location }).sort({ type: 1, number: 1 }).lean();
+  const byType = {};
+  const byStatus = {};
+  rooms.forEach(r => { (byType[r.type] ||= { total: 0, byStatus: {} }).total++; byType[r.type].byStatus[r.status] = (byType[r.type].byStatus[r.status] || 0) + 1; byStatus[r.status] = (byStatus[r.status] || 0) + 1; });
+  return { property: LOCATIONS[location].name, totalRooms: rooms.length, byType, byStatus };
+}
+
+
+
+async function upcomingBookings(location) {
+  const from = today(), to = shift(today(), 8);
+  const rows = await Booking.find({ location, status: { $in: ["confirmed", "in-house"] }, checkIn: { $gte: from, $lt: to } })
+    .populate("guest", "name").sort({ checkIn: 1, roomNumber: 1 }).lean();
+  return { property: LOCATIONS[location].name, from, to, bookings: rows.map(b => ({
+    ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
+    checkIn: b.checkIn, checkOut: b.checkOut, status: b.status, source: b.source, totalCharge: b.totalCharge,
+  })) };
+}
+
+async function roomStatusDetail(location, status) {
+  const rooms = await Room.find({ location, status }).sort({ floor: 1, number: 1 }).lean();
+  return { property: LOCATIONS[location].name, status, count: rooms.length,
+    rooms: rooms.map(r => ({ number: r.number, type: r.type, floor: r.floor, note: r.statusNote || null })) };
+}
+
+async function availableRoomsNow(location) {
+  const rooms = await Room.find({ location, status: "available" }).sort({ floor: 1, number: 1 }).lean();
+  return { property: LOCATIONS[location].name, count: rooms.length, rooms: rooms.map(r => ({ number: r.number, type: r.type, floor: r.floor })) };
+}
+
+async function currentRates(location) { return { property: LOCATIONS[location].name, rates: await ratesFor(location) }; }
+
+async function facilityStatus(location) {
+  const facilities = await Facility.find({ location }).sort({ type: 1, name: 1 }).lean();
+  return { property: LOCATIONS[location].name, facilities: facilities.map(f => ({ name: f.name, type: f.type,
+    status: f.status, statusNote: f.statusNote || null, openingHours: f.openingHours || null, sellsItems: !!f.sellsItems })) };
+}
+
+async function requestSummary(location) {
+  const rows = await BookingRequest.find({ location }).lean();
+  const counts = rows.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
+  return { property: LOCATIONS[location].name, total: rows.length, counts };
+}
+
+async function publishedContent(location) {
+  const rows = await SiteContent.find(SiteContent.liveFilter(location)).sort({ priority: -1, updatedAt: -1 }).lean();
+  return { property: LOCATIONS[location].name, content: rows.map(r => ({ type: r.type, title: r.title, body: r.body || "", location: r.location, startsAt: r.startsAt, endsAt: r.endsAt })) };
+}
+
+async function faqKnowledge(location) {
+  const rows = await FaqEntry.find({ active: true, $or: [{ location: "both" }, { location }] }).sort({ category: 1, order: 1 }).lean();
+  const categories = {};
+  rows.forEach(r => (categories[r.category || "General"] ||= []).push(r.question));
+  return { property: LOCATIONS[location].name, categories, total: rows.length };
+}
+
+async function staffOverview() {
+  const [users, facilities] = await Promise.all([
+    User.find({}).sort({ location: 1, role: 1, name: 1 }).lean(),
+    Facility.find({}).select("name location").lean(),
+  ]);
+  const fBy = Object.fromEntries(facilities.map(f => [String(f._id), f]));
+  return { staff: users.map(u => ({
+    name: u.name, username: u.username, role: u.role, location: u.location, active: !!u.active,
+    assignedFacilities: (u.assignedFacilities || []).map(id => fBy[String(id)]?.name).filter(Boolean),
+  })) };
+}
+
+async function recentAudit() {
+  const AuditLog = require("../models/AuditLog");
+  const rows = await AuditLog.find({}).sort({ at: -1 }).limit(30).lean();
+  return { entries: rows.map(a => ({ at: a.at, userName: a.userName, role: a.role, location: a.location, action: a.action, entity: a.entity })) };
+}
+
+
+
+async function notifications(location, userId) {
+  const rows = await Notification.find({ location }).sort({ createdAt: -1 }).limit(25).lean();
+  return { property: LOCATIONS[location].name,
+    unread: userId ? rows.filter(n => !(n.readBy || []).some(id => String(id) === String(userId))).length : rows.length,
+    notifications: rows.map(n => ({ title: n.title, body: n.body || "", urgent: !!n.urgent, type: n.type, createdAt: n.createdAt })) };
+}
+
 const BUILDERS = {
   operationsSnapshot, housekeepingSnapshot, outstandingBalances, revenueSummary,
   propertyComparison, pricingSignals, bookingSources, repeatGuests,
-  pendingRequests, forwardOccupancy,
+  pendingRequests, forwardOccupancy, todaySales, facilityRevenueToday, recentPayments, paymentFees,
+  arrivalsToday, departuresToday, inHouseGuests, todayOccupancy, bookingStatusesToday, guestStats,
+  roomInventory, availableRoomsNow, currentRates, facilityStatus, requestSummary, publishedContent,
+  faqKnowledge, staffOverview, recentAudit, notifications, upcomingBookings, roomStatusDetail, facilityRevenue,
 };
 
-async function buildContext(name, location) {
+async function buildContext(name, location, userId) {
   if (!name || name === "none") return null;
   const fn = BUILDERS[name];
   if (!fn) throw new Error("Unknown context builder: " + name);
-  return fn(location);
+  return name === "notifications" ? fn(location, userId) : fn(location);
 }
 
 module.exports = { buildContext, BUILDERS };
