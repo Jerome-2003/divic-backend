@@ -8,6 +8,23 @@ const { foliosFor, facilityChargeLines } = require("../services/folio");
 
 router.use(requireAuth, requireModule("billing"));
 
+// Compatibility endpoint for PMS clients that request GET /api/payments.
+// Return folios while keeping normal billing/property permissions in place.
+router.get("/", scopeLocation, async (req, res, next) => {
+  try {
+    const bookings = await Booking.find({ location: req.location, status: { $ne: "cancelled" } })
+      .populate("guest", "name phone").sort({ checkIn: -1 }).limit(300).lean();
+    const folios = await foliosFor(bookings);
+    res.json(bookings.map((b) => {
+      const f = folios[String(b._id)];
+      return { bookingId: b._id, ref: b.ref, guest: b.guest?.name, phone: b.guest?.phone,
+        roomNumber: b.roomNumber, roomType: b.roomType, status: b.status, checkIn: b.checkIn,
+        checkOut: b.checkOut, nights: b.nights, rate: b.rate, roomCharges: f.roomCharges,
+        facilityCharges: f.facilityCharges, charges: f.totalCharges, paid: f.paid, balance: f.balance };
+    }));
+  } catch (e) { next(e); }
+});
+
 /**
  * Folios: every booking with what is charged, paid and owing. Room charges and
  * facility charges are broken out separately so a guest can see what came from
