@@ -147,7 +147,16 @@ async function settlePaidRequest(app, requestDoc, verification) {
   }
 
   try {
-    app?.get("io")?.to("loc:" + requestDoc.location).emit("booking:created", booking);
+    const io = app?.get("io");
+    io?.to("loc:" + requestDoc.location).emit("booking:created", booking);
+    io?.to("loc:" + requestDoc.location).emit("payment:recorded", {
+      bookingId: booking?._id,
+      reference: requestDoc.reference,
+      paystackReference: requestDoc.payment?.paystackReference,
+      amount: requestDoc.payment?.amount ?? verification.amountNaira,
+      method: "paystack",
+      verified: true,
+    });
   } catch { /* the booking is saved; a missed socket frame is not worth failing over */ }
 
   return booking;

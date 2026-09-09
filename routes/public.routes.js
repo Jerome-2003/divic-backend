@@ -181,18 +181,39 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
       userAgent: clean(req.headers["user-agent"], 200),
     });
 
-    req.app.get("io")?.to("loc:" + location).emit("request:new", {
-      reference: doc.reference, guestName: doc.guestName, roomType: doc.roomType,
-      checkIn: doc.checkIn, checkOut: doc.checkOut,
-    });
+    // This legacy/direct-payment path can arrive with an already-verified
+    // Paystack reference. Do not leave money stranded in BookingRequest: settle
+    // it immediately into Booking + Payment just like the normal payment flow.
+    if (payment.verified && payment.paystackReference) {
+      const check = await verifyTransaction(
+        payment.paystackReference,
+        Math.round(payment.amount * 100)
+      );
+      if (!check.ok) {
+        doc.payment.verified = false;
+        doc.payment.failureReason = check.reason;
+        await doc.save();
+        return res.status(402).json({ error: "We could not confirm that payment. " + check.reason });
+      }
+      await settlePaidRequest(req.app, doc, check);
+      const settled = await BookingRequest.findById(doc._id).lean();
+      if (settled) Object.assign(doc, settled);
+    } else {
+      req.app.get("io")?.to("loc:" + location).emit("request:new", {
+        reference: doc.reference, guestName: doc.guestName, roomType: doc.roomType,
+        checkIn: doc.checkIn, checkOut: doc.checkOut,
+      });
+    }
 
     res.status(201).json({
       reference: doc.reference,
-      status: "pending",
+      status: doc.status,
       location: LOCATIONS[location].name,
       roomType: doc.roomType,
       checkIn: doc.checkIn, checkOut: doc.checkOut, nights,
       quotedRate: rate, quotedTotal: rate * nights, currency: "NGN",
+      paid: !!doc.payment.verified,
+      bookingRef: doc.booking ? (await require("../models/Booking").findById(doc.booking).select("ref").lean())?.ref : undefined,
       likelyAvailable,
       message: likelyAvailable
         ? "Your request has been received. The hotel will call you to confirm and hold your room."
@@ -332,6 +353,51 @@ router.post("/booking-requests/:reference/pay", requestLimiter, async (req, res,
  * with Paystack rather than trusting the redirect, because a guest landing back
  * on the site proves nothing about whether money moved.
  */
+/**
+ * POST /api/public/booking-requests/:reference/reconcile-paystack
+ *
+ * Recovery endpoint for the PMS/website when the guest paid successfully but
+ * the webhook was delayed or unavailable. It verifies directly with Paystack
+ * and is idempotent through settlePaidRequest. No client-provided amount is
+ * trusted.
+ */
+router.post("/booking-requests/:reference/reconcile-paystack", async (req, res, next) => {
+  try {
+    const doc = await BookingRequest.findOne({ reference: String(req.params.reference).toUpperCase() });
+    if (!doc) return res.status(404).json({ error: "No request found with that reference." });
+    if (!doc.payment.paystackReference) {
+      return res.status(400).json({ error: "This booking request has no Paystack reference." });
+    }
+
+    if (!doc.payment.verified) {
+      const check = await verifyTransaction(doc.payment.paystackReference, Math.round(doc.payment.amount * 100));
+      if (!check.ok) {
+        doc.payment.failureReason = check.reason;
+        await doc.save();
+        return res.status(402).json({ paid: false, error: check.reason });
+      }
+      await settlePaidRequest(req.app, doc, check);
+    }
+
+    const fresh = await BookingRequest.findById(doc._id)
+      .select("reference status location roomType checkIn checkOut nights quotedTotal payment booking")
+      .lean();
+    const booking = fresh?.booking
+      ? await require("../models/Booking").findById(fresh.booking).select("ref roomNumber status needsAttention").lean()
+      : null;
+
+    res.json({
+      paid: !!fresh?.payment?.verified,
+      reference: fresh?.reference,
+      paystackReference: fresh?.payment?.paystackReference,
+      status: fresh?.status,
+      bookingRef: booking?.ref,
+      roomAssigned: !!booking?.roomNumber,
+      awaitingRoom: !!booking?.needsAttention,
+    });
+  } catch (e) { next(e); }
+});
+
 router.get("/booking-requests/:reference/payment-status", async (req, res, next) => {
   try {
     const doc = await BookingRequest.findOne({ reference: String(req.params.reference).toUpperCase() });
@@ -339,9 +405,16 @@ router.get("/booking-requests/:reference/payment-status", async (req, res, next)
 
     if (!doc.payment.verified && doc.payment.paystackReference) {
       const check = await verifyTransaction(doc.payment.paystackReference, Math.round(doc.payment.amount * 100));
-      if (check.ok) await settlePaidRequest(req.app, doc, check);
-      else doc.payment.failureReason = check.reason;
-      await doc.save();
+      if (check.ok) {
+        await settlePaidRequest(req.app, doc, check);
+        // Reload the request after settlement so the response reflects the
+        // committed booking/payment state rather than a stale document.
+        const refreshed = await BookingRequest.findById(doc._id).lean();
+        if (refreshed) Object.assign(doc, refreshed);
+      } else {
+        doc.payment.failureReason = check.reason;
+        await doc.save();
+      }
     }
 
     const booking = doc.booking

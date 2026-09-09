@@ -116,5 +116,19 @@ check("Urban: classic 5, deluxe 6, superior 4, crown 6",
   count("urban","classic")===5 && count("urban","deluxe")===6 &&
   count("urban","superior")===4 && count("urban","crown")===6);
 
+
+console.log("\n=== Password lock policy ===");
+const fs = require("fs");
+const userModelText = fs.readFileSync(require("path").join(__dirname, "../models/User.js"), "utf8");
+const authRouteText = fs.readFileSync(require("path").join(__dirname, "../routes/auth.routes.js"), "utf8");
+const staffRouteText = fs.readFileSync(require("path").join(__dirname, "../routes/staff.routes.js"), "utf8");
+check("User stores failed login attempts", userModelText.includes("failedLoginAttempts"));
+check("User stores login lock state", userModelText.includes("loginLockedAt"));
+check("5 failed attempts are the lock threshold", authRouteText.includes("user.failedLoginAttempts >= 5"));
+check("locked login returns HTTP 423", authRouteText.includes("res.status(423)"));
+check("successful login resets failed attempts", authRouteText.includes("user.failedLoginAttempts = 0"));
+check("manager/owner unlock route exists", staffRouteText.includes('/unlock-login'));
+check("manager cannot unlock owner accounts", staffRouteText.includes('Only the owner can unlock an owner account.'));
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);

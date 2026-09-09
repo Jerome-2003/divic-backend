@@ -20,6 +20,12 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     active: { type: Boolean, default: true },
     lastLoginAt: Date,
+
+    // Password protection. A user gets 5 failed password attempts; the 5th
+    // failure locks the account until a manager or owner explicitly unlocks it.
+    failedLoginAttempts: { type: Number, default: 0, min: 0 },
+    loginLockedAt: Date,
+    loginUnlockedAt: Date,
   },
   { timestamps: true }
 );

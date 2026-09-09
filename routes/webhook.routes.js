@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const express = require("express");
 const BookingRequest = require("../models/BookingRequest");
-const { verifyWebhookSignature, verifyTransaction } = require("../services/paystack");
+const { verifyWebhookSignature, verifyAndDescribeTransaction } = require("../services/paystack");
 const { settlePaidRequest } = require("../services/websiteBooking");
 
 /**
@@ -14,6 +14,10 @@ const { settlePaidRequest } = require("../services/websiteBooking");
  * Without signature verification this endpoint would let anyone POST "payment
  * succeeded" for any reference and get a room for free.
  */
+router.get("/paystack/health", (_req, res) => {
+  res.json({ ok: true, webhook: "paystack", at: new Date().toISOString() });
+});
+
 router.post("/paystack", express.raw({ type: "*/*", limit: "1mb" }), async (req, res) => {
   const signature = req.headers["x-paystack-signature"];
   if (!verifyWebhookSignature(req.body, signature)) {
@@ -48,7 +52,11 @@ router.post("/paystack", express.raw({ type: "*/*", limit: "1mb" }), async (req,
 
     // Verify independently rather than trusting the webhook body alone. Belt
     // and braces: the signature proves the sender, verify proves the amount.
-    const check = await verifyTransaction(reference, Math.round(doc.payment.amount * 100));
+    const check = await verifyAndDescribeTransaction(reference);
+    if (check.ok && typeof doc.payment.amount === "number" && check.amountNaira < doc.payment.amount) {
+      check.ok = false;
+      check.reason = "Paystack reports less than the expected payment amount.";
+    }
     if (!check.ok) {
       doc.payment.failureReason = check.reason;
       await doc.save();
@@ -56,7 +64,19 @@ router.post("/paystack", express.raw({ type: "*/*", limit: "1mb" }), async (req,
       return;
     }
 
-    await settlePaidRequest(req.app, doc, check);
+    const booking = await settlePaidRequest(req.app, doc, check);
+    if (booking) {
+      try {
+        req.app?.get("io")?.to("loc:" + doc.location).emit("payment:recorded", {
+          bookingId: booking._id,
+          reference: doc.reference,
+          paystackReference: reference,
+          amount: check.amountNaira,
+          method: "paystack",
+          verified: true,
+        });
+      } catch {}
+    }
     console.log("[webhook] settled " + doc.reference);
   } catch (err) {
     console.error("[webhook] handler failed", err.message);

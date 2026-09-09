@@ -71,6 +71,7 @@ async function initializeTransaction({ email, amountNaira, reference, metadata, 
  * express.raw — a body that has been parsed and re-stringified will not match.
  */
 function verifyWebhookSignature(rawBody, signature) {
+  if (!Buffer.isBuffer(rawBody)) return false;
   if (!signature || !process.env.PAYSTACK_SECRET_KEY) return false;
   const expected = crypto
     .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
@@ -83,6 +84,33 @@ function verifyWebhookSignature(rawBody, signature) {
   return crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * Verify a transaction and return the amount/reference Paystack actually reports.
+ * Useful for reconciliation jobs and callback recovery where the local request
+ * record may be missing or stale.
+ */
+async function verifyAndDescribeTransaction(reference) {
+  const res = await paystackRequest(
+    "/transaction/verify/" + encodeURIComponent(reference)
+  );
+  if (!res || !res.status || !res.data) {
+    return { ok: false, reason: "Paystack did not return transaction details." };
+  }
+  const data = res.data;
+  if (data.status !== "success") {
+    return { ok: false, reason: "Payment status from Paystack: " + data.status, raw: data };
+  }
+  if (data.currency !== "NGN") {
+    return { ok: false, reason: "Unexpected currency: " + data.currency, raw: data };
+  }
+  return {
+    ok: true,
+    amountNaira: Number(data.amount || 0) / 100,
+    reference: data.reference || reference,
+    raw: data,
+  };
+}
+
 module.exports = {
-  verifyTransaction, initializeTransaction, paystackRequest, verifyWebhookSignature,
+  verifyTransaction, verifyAndDescribeTransaction, initializeTransaction, paystackRequest, verifyWebhookSignature,
 };

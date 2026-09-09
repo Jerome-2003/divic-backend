@@ -18,15 +18,58 @@ router.post("/login", loginLimiter, async (req, res, next) => {
     if (!username || !password) {
       return res.status(400).json({ error: "Enter your username and password." });
     }
-    const user = await User.findOne({ username: String(username).toLowerCase().trim() });
+
+    const normalizedUsername = String(username).toLowerCase().trim();
+    const user = await User.findOne({ username: normalizedUsername });
+
     // Same message either way so the form cannot be used to discover usernames.
-    if (!user || !(await user.checkPassword(password))) {
+    if (!user) {
       return res.status(401).json({ error: "That username and password don't match an account." });
     }
+
+    if (user.loginLockedAt) {
+      return res.status(423).json({
+        error: "This account is locked after 5 failed password attempts.",
+        locked: true,
+        requiresManagerOrOwner: true,
+      });
+    }
+
+    const passwordOk = await user.checkPassword(password);
+    if (!passwordOk) {
+      user.failedLoginAttempts = Math.min(5, (user.failedLoginAttempts || 0) + 1);
+
+      if (user.failedLoginAttempts >= 5) {
+        user.loginLockedAt = new Date();
+        user.loginUnlockedAt = undefined;
+        await user.save();
+
+        logAction({ user: user.toSafeJSON(), headers: req.headers, ip: req.ip },
+          { action: user.name + " was locked after 5 failed password attempts", entity: "User", entityId: user._id, location: user.location });
+
+        return res.status(423).json({
+          error: "This account is locked after 5 failed password attempts. A manager or owner must grant access before you can sign in again.",
+          locked: true,
+          requiresManagerOrOwner: true,
+          attempts: 5,
+        });
+      }
+
+      await user.save();
+      const remaining = 5 - user.failedLoginAttempts;
+      return res.status(401).json({
+        error: "That username and password don't match an account.",
+        attemptsRemaining: remaining,
+      });
+    }
+
     if (!user.active) {
       return res.status(403).json({ error: "This account has been deactivated. Speak to your manager." });
     }
 
+    // A successful sign-in clears the failed-attempt counter.
+    user.failedLoginAttempts = 0;
+    user.loginLockedAt = undefined;
     user.lastLoginAt = new Date();
     await user.save();
 
@@ -37,6 +80,10 @@ router.post("/login", loginLimiter, async (req, res, next) => {
     res.json({ token, user: user.toSafeJSON(), permissions: PERMISSIONS[user.role] });
   } catch (e) { next(e); }
 });
+
+// Lets the account-management screen show which staff accounts need an
+// authorised unlock. The actual unlock endpoint is in /api/staff because that
+// router is already restricted to manager/owner accounts.
 
 router.get("/me", requireAuth, async (req, res) => {
   res.json({ user: req.user, permissions: PERMISSIONS[req.user.role] });

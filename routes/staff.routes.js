@@ -43,7 +43,13 @@ router.get("/", async (req, res, next) => {
     // A manager cannot see or touch owner accounts.
     const filter = req.user.role === "owner" ? {} : { role: { $ne: "owner" } };
     const users = await User.find(filter).sort({ name: 1 });
-    res.json(users.map((u) => ({ ...u.toSafeJSON(), lastLoginAt: u.lastLoginAt })));
+    res.json(users.map((u) => ({
+      ...u.toSafeJSON(),
+      lastLoginAt: u.lastLoginAt,
+      failedLoginAttempts: u.failedLoginAttempts || 0,
+      loginLocked: Boolean(u.loginLockedAt),
+      loginLockedAt: u.loginLockedAt || null,
+    })));
   } catch (e) { next(e); }
 });
 
@@ -82,6 +88,44 @@ router.post("/", async (req, res, next) => {
 
     logAction(req, { action: "Created a " + role + " account for " + name, entity: "User", entityId: user._id });
     res.status(201).json(user.toSafeJSON());
+  } catch (e) { next(e); }
+});
+
+router.post("/:id/unlock-login", async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "That account does not exist." });
+
+    // A manager may unlock operational staff but not an owner account.
+    if (req.user.role === "manager" && user.role === "owner") {
+      return res.status(403).json({ error: "Only the owner can unlock an owner account." });
+    }
+
+    const wasLocked = Boolean(user.loginLockedAt || user.failedLoginAttempts);
+    user.failedLoginAttempts = 0;
+    user.loginLockedAt = undefined;
+    user.loginUnlockedAt = new Date();
+    await user.save();
+
+    logAction(req, {
+      action: "Granted login access to " + user.name,
+      entity: "User",
+      entityId: user._id,
+      location: user.location,
+      after: { loginAccessGranted: true, wasLocked },
+    });
+
+    res.json({
+      ok: true,
+      message: user.name + " can sign in again.",
+      user: {
+        ...user.toSafeJSON(),
+        failedLoginAttempts: 0,
+        loginLocked: false,
+        loginLockedAt: null,
+        loginUnlockedAt: user.loginUnlockedAt,
+      },
+    });
   } catch (e) { next(e); }
 });
 
@@ -144,6 +188,10 @@ router.patch("/:id", async (req, res, next) => {
     if (password) {
       if (password.length < 8) return res.status(400).json({ error: "The new password needs at least 8 characters." });
       await user.setPassword(password);
+      // An authorised password reset also restores login access.
+      user.failedLoginAttempts = 0;
+      user.loginLockedAt = undefined;
+      user.loginUnlockedAt = new Date();
     }
     await user.save();
 
