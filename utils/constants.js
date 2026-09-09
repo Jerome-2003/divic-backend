@@ -86,7 +86,7 @@ const PERMISSIONS = {
   cleaner:      ["rooms","notifications"],
   // Bartenders, restaurant and pool staff. Their facilities and their till,
   // nothing else — no dashboard, no bookings, no guests list, no assistant.
-  facility:     ["facilities","pos","notifications"],
+  facility:     ["facilities","pos","ai","notifications"],
 };
 
 module.exports = {
