@@ -1,4 +1,7 @@
 const router = require("express").Router();
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const SiteContent = require("../models/SiteContent");
 const FaqEntry = require("../models/FaqEntry");
 const { requireAuth, requireRole } = require("../middleware/auth");
@@ -27,6 +30,51 @@ function badMediaUrl(url) {
 
 const FIELDS = ["key","type","location","title","body","mediaType","mediaUrl","caption","ctaLabel","ctaHref","active","startsAt","endsAt","priority"];
 const pick = (body) => FIELDS.reduce((o, k) => (body[k] !== undefined ? { ...o, [k]: body[k] } : o), {});
+
+
+const MEDIA_LIMIT = 8 * 1024 * 1024;
+const UPLOAD_DIR = path.join(__dirname, "../uploads/site-content");
+const MEDIA_TYPES = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+};
+
+function parseDataUrl(value) {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(String(value || ""));
+  if (!match) return null;
+  const mime = match[1].toLowerCase();
+  const ext = MEDIA_TYPES[mime];
+  if (!ext) return null;
+  const buffer = Buffer.from(match[2], "base64");
+  if (!buffer.length || buffer.length > MEDIA_LIMIT) return null;
+  return { mime, ext, buffer };
+}
+
+router.post("/media-upload", async (req, res, next) => {
+  try {
+    const parsed = parseDataUrl(req.body?.dataUrl);
+    if (!parsed) {
+      return res.status(400).json({ error: "Choose a supported image/video file no larger than 8 MB." });
+    }
+    const requestedType = req.body?.mediaType;
+    const isImage = parsed.mime.startsWith("image/");
+    const isVideo = parsed.mime.startsWith("video/");
+    if ((requestedType === "image" && !isImage) || (requestedType === "video" && !isVideo)) {
+      return res.status(400).json({ error: `Choose a ${requestedType} file.` });
+    }
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    const filename = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${parsed.ext}`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), parsed.buffer);
+    const mediaUrl = `/uploads/site-content/${filename}`;
+    logAction(req, { action: `Uploaded website ${requestedType || (isVideo ? "video" : "image")}`, entity: "SiteContent", location: "both" });
+    res.status(201).json({ mediaUrl, mime: parsed.mime, size: parsed.buffer.length });
+  } catch (e) { next(e); }
+});
 
 /* ---------------- site content ---------------- */
 

@@ -9,6 +9,7 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
+const path = require("path");
 
 const { connectDB } = require("./config/db");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
@@ -48,6 +49,10 @@ app.use("/api/webhooks", require("./routes/webhook.routes"));
 
 app.use(express.json({ limit: "12mb" }));
 app.set("trust proxy", 1);
+
+// Uploaded website media is served from a normal /uploads path so content
+// records never need to store data: URLs.
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Real-time sync. Staff join a room per property so a change at Divic Urban
 // never appears on a screen at Divic Exclusive.

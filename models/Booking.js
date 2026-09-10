@@ -45,6 +45,12 @@ const bookingSchema = new mongoose.Schema(
     // Paid, but no room could be given. The most urgent state in this system.
     needsAttention: { type: Boolean, default: false, index: true },
     attentionReason: String,
+    dateChanges: [{
+      fromCheckIn: String, fromCheckOut: String,
+      toCheckIn: String, toCheckOut: String,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      reason: String, at: { type: Date, default: Date.now },
+    }],
     roomChanges: [{
       from: String, to: String, reason: String,
       by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
