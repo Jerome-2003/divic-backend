@@ -97,7 +97,7 @@ router.post("/paystack/initialize", async (req, res, next) => {
     }
     const reference = "DIVIC_" + booking.ref.replace("-", "") + "_" + Date.now().toString().slice(-6);
     const init = await initializeTransaction({
-      email: email || booking.guest?.email || "frontdesk@divic.ng",
+      email: email || booking.guest?.email || "info@divicexclusivehotels.com.ng",
       amountNaira: amount,
       reference,
       metadata: { bookingRef: booking.ref, location: booking.location, roomNumber: booking.roomNumber },
