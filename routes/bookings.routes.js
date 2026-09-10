@@ -292,10 +292,17 @@ router.post("/:id/cancel", async (req, res, next) => {
 
 /**
  * Moves a booking to a different room, or places a paid booking that arrived
- * with no room because everything was taken during checkout.
+ * with no room because everything was taken during checkout. Works the same
+ * way regardless of how the booking was made — a website request accepted
+ * into a room, a walk-in, a phone booking — since none of that changes what
+ * "move this guest to another room" means.
  *
  * Availability is re-checked here rather than trusted from the client: the list
  * the receptionist is looking at may be seconds out of date.
+ *
+ * A room of a different type re-prices the stay at that type's current rate,
+ * for the nights remaining on the booking; facility charges already on the
+ * folio are untouched.
  */
 router.patch("/:id/room", async (req, res, next) => {
   try {
@@ -323,12 +330,32 @@ router.patch("/:id/room", async (req, res, next) => {
     }
 
     const previous = booking.roomNumber || null;
+    const previousType = booking.roomType;
+    const changingType = room.type !== previousType;
 
     // A guest who is already in house is physically in the old room, so free
     // the old one for cleaning and take the new one straight to occupied.
     if (booking.status === "in-house") {
       if (booking.room) await Room.updateOne({ _id: booking.room }, { status: "dirty" });
       await Room.updateOne({ _id: room._id }, { status: "occupied" });
+    }
+
+    // Moving into a different room type (an upgrade, a downgrade, or simply
+    // the only thing free) has to re-price the stay — otherwise the booking
+    // keeps billing at the old room's rate for however many nights remain.
+    // The nights and any facility charges are untouched; only the room side
+    // of the folio moves.
+    const previousRate = booking.rate;
+    const previousTotal = booking.totalCharge;
+    if (changingType) {
+      const rateDoc = await Rate.findOne({ location: booking.location }).lean();
+      const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[booking.location].rates;
+      const newRate = prices[room.type];
+      if (!Number.isFinite(newRate)) {
+        return res.status(400).json({ error: "No rate is set for " + room.type + " rooms at this property." });
+      }
+      booking.rate = newRate;
+      booking.totalCharge = newRate * booking.nights;
     }
 
     booking.room = room._id;
@@ -341,11 +368,14 @@ router.patch("/:id/room", async (req, res, next) => {
     await booking.save();
 
     logAction(req, {
-      action: previous
-        ? "Moved " + booking.guest.name + " from room " + previous + " to " + room.number + (reason ? " — " + reason : "")
-        : "Placed " + booking.guest.name + " in room " + room.number + " (booking had no room)",
+      action: (previous
+        ? "Moved " + booking.guest.name + " from room " + previous + " to " + room.number
+        : "Placed " + booking.guest.name + " in room " + room.number + " (booking had no room)") +
+        (changingType ? " — " + previousType + " to " + room.type + ", " + previousRate + " to " + booking.rate + " a night" : "") +
+        (reason ? " — " + reason : ""),
       entity: "Booking", entityId: booking._id, location: booking.location,
-      before: { roomNumber: previous }, after: { roomNumber: room.number },
+      before: { roomNumber: previous, roomType: previousType, rate: previousRate, totalCharge: previousTotal },
+      after: { roomNumber: room.number, roomType: room.type, rate: booking.rate, totalCharge: booking.totalCharge },
     });
     req.app.get("io")?.to("loc:" + booking.location).emit("booking:updated", booking);
     res.json(booking);
