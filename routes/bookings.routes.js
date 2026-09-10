@@ -8,6 +8,7 @@ const { requireAuth, requireModule, scopeLocation } = require("../middleware/aut
 const { isRoomAvailable, validRange, nightsBetween } = require("../services/availability");
 const { logAction } = require("../services/audit");
 const { foliosFor, folioFor } = require("../services/folio");
+const { notifyBookingConfirmed } = require("../services/notify");
 const { LOCATIONS } = require("../utils/constants");
 
 router.use(requireAuth, requireModule("bookings"));
@@ -127,6 +128,7 @@ router.post("/", scopeLocation, async (req, res, next) => {
       action: "Created booking " + created.ref + " for " + created.guest.name + " in room " + created.roomNumber,
       entity: "Booking", entityId: created._id, location: req.location, after: created.toObject(),
     });
+    notifyBookingConfirmed(created, created.guest);
     req.app.get("io")?.to("loc:" + req.location).emit("booking:created", created);
     res.status(201).json(created);
   } catch (e) { next(e); } finally { session.endSession(); }

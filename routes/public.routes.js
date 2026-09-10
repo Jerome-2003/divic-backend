@@ -6,6 +6,7 @@ const Facility = require("../models/Facility");
 const { availabilityByType, validRange, nightsBetween } = require("../services/availability");
 const { LOCATIONS, ROOM_PLAN } = require("../utils/constants");
 const { verifyTransaction } = require("../services/paystack");
+const { notifyBookingRequestSubmitted } = require("../services/notify");
 
 /**
  * PUBLIC ENDPOINTS — no authentication.
@@ -166,6 +167,7 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
       reference: doc.reference, guestName: doc.guestName, roomType: doc.roomType,
       checkIn: doc.checkIn, checkOut: doc.checkOut,
     });
+    notifyBookingRequestSubmitted(doc);
 
     res.status(201).json({
       reference: doc.reference,

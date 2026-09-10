@@ -6,6 +6,7 @@ const Room = require("../models/Room");
 const { requireAuth, requireModule, scopeLocation } = require("../middleware/auth");
 const { findAvailableRooms } = require("../services/availability");
 const { logAction } = require("../services/audit");
+const { notifyBookingConfirmed } = require("../services/notify");
 
 // Staff-side handling of website requests.
 router.use(requireAuth, requireModule("bookings"));
@@ -75,6 +76,7 @@ router.post("/:id/accept", async (req, res, next) => {
       action: "Accepted website request " + reqDoc.reference + " as booking " + booking.ref + " in room " + room.number,
       entity: "BookingRequest", entityId: reqDoc._id, location: reqDoc.location,
     });
+    notifyBookingConfirmed(booking, guest);
     req.app.get("io")?.to("loc:" + reqDoc.location).emit("booking:created", booking);
     res.json({ request: reqDoc, booking });
   } catch (e) { next(e); }

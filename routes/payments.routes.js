@@ -5,6 +5,7 @@ const { requireAuth, requireModule, requireRole, scopeLocation } = require("../m
 const { verifyTransaction, initializeTransaction } = require("../services/paystack");
 const { logAction } = require("../services/audit");
 const { foliosFor, facilityChargeLines } = require("../services/folio");
+const { notifyPaymentRecorded } = require("../services/notify");
 
 router.use(requireAuth, requireModule("billing"));
 
@@ -116,7 +117,7 @@ router.post("/paystack/initialize", async (req, res, next) => {
 router.post("/", scopeLocation, async (req, res, next) => {
   try {
     const { bookingId, amount, method, paystackReference, note } = req.body;
-    const booking = await Booking.findById(bookingId).populate("guest", "name");
+    const booking = await Booking.findById(bookingId).populate("guest", "name email");
     if (!booking) return res.status(404).json({ error: "That booking does not exist." });
     if (req.user.location !== "all" && booking.location !== req.user.location) {
       return res.status(403).json({ error: "You can only work on your own property." });
@@ -148,6 +149,7 @@ router.post("/", scopeLocation, async (req, res, next) => {
       action: "Recorded " + amount + " naira by " + method + " on " + booking.ref,
       entity: "Payment", entityId: payment._id, location: booking.location,
     });
+    notifyPaymentRecorded({ ...payment.toObject(), recordedByName: req.user.name }, booking, booking.guest);
     req.app.get("io")?.to("loc:" + booking.location).emit("payment:recorded", { bookingId: booking._id, amount });
     res.status(201).json(payment);
   } catch (e) { next(e); }
