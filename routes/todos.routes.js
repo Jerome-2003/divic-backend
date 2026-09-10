@@ -1,12 +1,14 @@
 const router = require("express").Router();
 const Todo = require("../models/Todo");
-const { requireAuth, scopeLocation } = require("../middleware/auth");
+const { requireAuth } = require("../middleware/auth");
 
-router.use(requireAuth, scopeLocation);
+// To-do lists are personal. Every signed-in user has their own list,
+// regardless of which property/branch they are currently viewing.
+router.use(requireAuth);
 
 router.get("/", async (req, res, next) => {
   try {
-    const rows = await Todo.find({ location: req.location })
+    const rows = await Todo.find({ createdBy: req.user.id })
       .populate("createdBy", "name")
       .populate("completedBy", "name")
       .sort({ completed: 1, createdAt: -1 }).limit(200).lean();
@@ -18,18 +20,22 @@ router.post("/", async (req, res, next) => {
   try {
     const text = String(req.body?.text || "").trim();
     if (!text) return res.status(400).json({ error: "Write something for the to-do item." });
-    const todo = await Todo.create({ text: text.slice(0, 300), location: req.location, createdBy: req.user.id });
+
+    const todo = await Todo.create({
+      text: text.slice(0, 300),
+      location: req.user.location === "all" ? "exclusive" : req.user.location,
+      createdBy: req.user.id,
+    });
     await todo.populate("createdBy", "name");
-    req.app.get("io")?.to("loc:" + req.location).emit("todo:updated", todo);
     res.status(201).json(todo);
   } catch (e) { next(e); }
 });
 
 router.patch("/:id", async (req, res, next) => {
   try {
-    const todo = await Todo.findById(req.params.id);
-    if (!todo) return res.status(404).json({ error: "That to-do item does not exist." });
-    if (todo.location !== req.location) return res.status(403).json({ error: "You can only work on this property's to-do list." });
+    const todo = await Todo.findOne({ _id: req.params.id, createdBy: req.user.id });
+    if (!todo) return res.status(404).json({ error: "That to-do item does not exist in your list." });
+
     if (req.body.text !== undefined) {
       const text = String(req.body.text).trim();
       if (!text) return res.status(400).json({ error: "A to-do item cannot be empty." });
@@ -43,18 +49,15 @@ router.patch("/:id", async (req, res, next) => {
     await todo.save();
     await todo.populate("createdBy", "name");
     await todo.populate("completedBy", "name");
-    req.app.get("io")?.to("loc:" + req.location).emit("todo:updated", todo);
     res.json(todo);
   } catch (e) { next(e); }
 });
 
 router.delete("/:id", async (req, res, next) => {
   try {
-    const todo = await Todo.findById(req.params.id);
-    if (!todo) return res.status(404).json({ error: "That to-do item does not exist." });
-    if (todo.location !== req.location) return res.status(403).json({ error: "You can only work on this property's to-do list." });
+    const todo = await Todo.findOne({ _id: req.params.id, createdBy: req.user.id });
+    if (!todo) return res.status(404).json({ error: "That to-do item does not exist in your list." });
     await todo.deleteOne();
-    req.app.get("io")?.to("loc:" + req.location).emit("todo:updated", { _id: todo._id });
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
