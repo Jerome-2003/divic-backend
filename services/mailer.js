@@ -1,57 +1,53 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
 /**
- * Generic SMTP transport, shared by every guest-facing email this app sends.
+ * Guest-facing email, sent over Resend's HTTP API rather than SMTP.
  *
- * Deliberately provider-agnostic: SMTP_HOST/PORT/USER/PASS work the same
- * whether they point at a Google Workspace or Zoho mailbox for the hotel's
- * own domain, or at the SMTP relay of a transactional service like Resend
- * or SendGrid. Whichever is used, set the five SMTP_* variables below in
- * the environment — nothing else in this file needs to change.
+ * This app's free-tier Render hosting blocks outbound traffic to SMTP ports
+ * (25/465/587) entirely as of September 2025 — a real Zoho mailbox with
+ * correct credentials still times out, because the connection never reaches
+ * the port at all. An HTTP API sidesteps that outright: it's just an HTTPS
+ * POST, the same as any other API call this app already makes (Paystack,
+ * Gemini), so nothing about hosting has to change to use it.
  *
  * Email here is optional infrastructure, never load-bearing: a guest has
  * already given a phone number on every booking request, and the hotel
- * calls to confirm regardless of whether this sends. So a missing
- * configuration or a failed send is caught and logged, never thrown — the
- * booking itself must never fail, or look like it failed, because a mail
- * server was unreachable.
+ * calls to confirm regardless of whether this sends. So a missing API key
+ * or a failed send is caught and logged, never thrown — the booking itself
+ * must never fail, or look like it failed, because Resend was unreachable.
  */
-let transporter;
+let client;
 let warnedMissingConfig = false;
 
-function getTransporter() {
-  if (transporter !== undefined) return transporter;
-  if (!process.env.SMTP_HOST) {
+function getClient() {
+  if (client !== undefined) return client;
+  if (!process.env.RESEND_API_KEY) {
     if (!warnedMissingConfig) {
-      console.warn("[mailer] SMTP_HOST is not set — guest emails are disabled until it is.");
+      console.warn("[mailer] RESEND_API_KEY is not set — guest emails are disabled until it is.");
       warnedMissingConfig = true;
     }
-    transporter = null;
-    return transporter;
+    client = null;
+    return client;
   }
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT) || 587,
-    // Port 465 is implicit TLS; 587 (the default here) negotiates STARTTLS
-    // itself, so secure only needs to be forced on for the former.
-    secure: String(process.env.SMTP_SECURE).toLowerCase() === "true",
-    auth: process.env.SMTP_USER
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-  });
-  return transporter;
+  client = new Resend(process.env.RESEND_API_KEY);
+  return client;
 }
 
 /** Sends one email. Never throws — returns { sent, error? } instead. */
 async function sendMail({ to, subject, html, text }) {
   if (!to) return { sent: false, error: "no recipient" };
-  const t = getTransporter();
-  if (!t) return { sent: false, error: "mailer not configured" };
+  const r = getClient();
+  if (!r) return { sent: false, error: "mailer not configured" };
+  if (!process.env.MAIL_FROM) return { sent: false, error: "MAIL_FROM is not set" };
   try {
-    await t.sendMail({
-      from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    const { error } = await r.emails.send({
+      from: process.env.MAIL_FROM,
       to, subject, html, text,
     });
+    if (error) {
+      console.error("[mailer] send failed:", error.name, error.message);
+      return { sent: false, error: error.message };
+    }
     return { sent: true };
   } catch (err) {
     console.error("[mailer] send failed:", err.message);
