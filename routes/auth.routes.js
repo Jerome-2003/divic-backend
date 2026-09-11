@@ -94,6 +94,16 @@ router.get("/me", requireAuth, async (req, res) => {
   res.json({ user: req.user, permissions: PERMISSIONS[req.user.role] });
 });
 
+// Marks the guided tour seen for this account, so it is not offered again on
+// any device. Idempotent — setting it again just moves the timestamp.
+router.put("/me/tour-seen", requireAuth, async (req, res, next) => {
+  try {
+    const tourSeenAt = new Date();
+    await User.findByIdAndUpdate(req.user.id, { tourSeenAt });
+    res.json({ tourSeenAt });
+  } catch (e) { next(e); }
+});
+
 router.post("/change-password", requireAuth, async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
