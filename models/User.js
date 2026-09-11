@@ -21,6 +21,12 @@ const userSchema = new mongoose.Schema(
     active: { type: Boolean, default: true },
     lastLoginAt: Date,
 
+    // Set the first time this account dismisses or finishes the guided tour.
+    // Tracked here rather than in the browser so it follows the account, not
+    // the device — a receptionist who tours the app on the front-desk PC
+    // should not be offered it again just for signing in on their phone.
+    tourSeenAt: Date,
+
     // Password protection. A user gets 5 failed password attempts; the 5th
     // failure locks the account until a manager or owner explicitly unlocks it.
     failedLoginAttempts: { type: Number, default: 0, min: 0 },
@@ -44,6 +50,7 @@ userSchema.methods.toSafeJSON = function () {
     id: this._id, name: this.name, username: this.username, role: this.role,
     location: this.location, phone: this.phone, active: this.active,
     assignedFacilities: (this.assignedFacilities || []).map(String),
+    tourSeenAt: this.tourSeenAt || null,
   };
 };
 

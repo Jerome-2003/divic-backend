@@ -18,6 +18,7 @@ async function requireAuth(req, res, next) {
       id: String(user._id), name: user.name, role: user.role,
       location: user.location, username: user.username,
       assignedFacilities: (user.assignedFacilities || []).map(String),
+      tourSeenAt: user.tourSeenAt || null,
     };
     next();
   } catch {
