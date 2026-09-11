@@ -12,6 +12,7 @@ const FaqEntry = require("../models/FaqEntry");
 const { askPublic } = require("../services/gemini");
 const { settlePaidRequest } = require("../services/websiteBooking");
 const { notify } = require("../services/notify");
+const { sendBookingRequestReceivedEmail } = require("../services/guestMail");
 
 /**
  * PUBLIC ENDPOINTS — no authentication.
@@ -211,6 +212,12 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
         entity: "BookingRequest", entityId: doc._id, href: "/requests",
       });
     }
+
+    // A plain receipt of what was submitted, entirely separate from payment:
+    // it fires here regardless of which branch above ran, says nothing about
+    // payment status, and never blocks or fails the request itself — sendMail
+    // already catches its own errors, so this can only be a no-op at worst.
+    sendBookingRequestReceivedEmail(doc);
 
     res.status(201).json({
       reference: doc.reference,
