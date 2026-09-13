@@ -6,7 +6,8 @@ const Charge = require("../models/Charge");
 const Facility = require("../models/Facility");
 const { requireAuth, requireRole, scopeLocation } = require("../middleware/auth");
 const { LOCATIONS } = require("../utils/constants");
-const { windowFor, nightsIn, combine, MONTHS } = require("../services/report");
+const ReportExport = require("../models/ReportExport");
+const { windowFor, nightsIn, combine, periodsDue, MONTHS } = require("../services/report");
 
 // Revenue and analytics are manager and owner only. Receptionists never see them.
 router.use(requireAuth, requireRole("manager", "owner"));
@@ -327,11 +328,14 @@ router.get("/report", async (req, res, next) => {
     const win = windowFor(req.query);
     if (!win) {
       return res.status(400).json({
-        error: "Ask for a month as period=month&month=2026-09, or a year as period=year&year=2026.",
+        error: "Ask for a month as period=month&month=2026-09, a year as period=year&year=2026, " +
+          "or any stretch of days as period=range&from=2026-09-01&to=2026-09-14.",
       });
     }
     if (win.from > today()) {
-      return res.status(400).json({ error: "That " + win.kind + " has not started yet." });
+      return res.status(400).json({
+        error: win.kind === "range" ? "That range has not started yet." : "That " + win.kind + " has not started yet.",
+      });
     }
 
     // A manager sees their own property; only somebody over both gets the
@@ -378,6 +382,52 @@ router.get("/report", async (req, res, next) => {
       totals: combine(properties),
       months,
     });
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ *
+ *  THE MONTH-END AND YEAR-END PROMPT                                  *
+ * ------------------------------------------------------------------ */
+
+/**
+ * GET /api/analytics/report/due
+ *
+ * What this person still owes themselves a copy of. A month's figures are
+ * most useful in the first week after it ends and least useful the longer
+ * nobody looks; a prompt that appears on its own is the difference between a
+ * record that gets filed every month and one that gets filed the first month.
+ */
+router.get("/report/due", async (req, res, next) => {
+  try {
+    const taken = await ReportExport.find({ user: req.user.id }).select("kind period").lean();
+    res.json({ due: periodsDue(today(), taken) });
+  } catch (e) { next(e); }
+});
+
+/**
+ * POST /api/analytics/report/due — "I have taken this one away."
+ *
+ * Recorded when the report is actually printed or saved, not when it is merely
+ * opened: looking at September on screen is not the same as having a copy of
+ * it, and marking it done for a glance would quietly defeat the whole prompt.
+ */
+router.post("/report/due", async (req, res, next) => {
+  try {
+    const { kind, period } = req.body || {};
+    if (!["month", "year"].includes(kind)) {
+      return res.status(400).json({ error: "Say whether this is a month or a year." });
+    }
+    const ok = kind === "month" ? /^\d{4}-\d{2}$/.test(period) : /^\d{4}$/.test(period);
+    if (!ok) return res.status(400).json({ error: "That is not a period this can record." });
+
+    // Upsert: pressing print twice is not an error worth showing anyone.
+    await ReportExport.updateOne(
+      { user: req.user.id, kind, period },
+      { $setOnInsert: { at: new Date() } },
+      { upsert: true }
+    );
+    const taken = await ReportExport.find({ user: req.user.id }).select("kind period").lean();
+    res.json({ due: periodsDue(today(), taken) });
   } catch (e) { next(e); }
 });
 

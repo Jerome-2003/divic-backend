@@ -256,6 +256,27 @@ console.log("\n=== month and year windows ===");
   const feb = windowFor({ period: "month", month: "2028-02" });
   check("February in a leap year counts 29 nights", nightsIn(feb.from, feb.to) === 29);
 
+  // An arbitrary stretch of days, which is what somebody asking "how did the
+  // long weekend go?" actually wants.
+  const range = windowFor({ period: "range", from: "2026-09-03", to: "2026-09-09" });
+  check("a range ends the day after the last day asked for", range.to === "2026-09-10");
+  // "3rd to the 9th" is seven days to everyone who is not a computer.
+  check("...so the 3rd to the 9th is seven nights, not six", nightsIn(range.from, range.to) === 7);
+  check("a range is labelled the way a person writes dates",
+    range.label === "3 September 2026 to 9 September 2026");
+  check("the last day asked for is handed back for the date pickers", range.lastDay === "2026-09-09");
+
+  const oneDay = windowFor({ period: "range", from: "2026-09-03", to: "2026-09-03" });
+  check("a single day is one night", nightsIn(oneDay.from, oneDay.to) === 1);
+  check("...and is labelled as just that day", oneDay.label === "3 September 2026");
+
+  check("a backwards range is refused",
+    windowFor({ period: "range", from: "2026-09-09", to: "2026-09-03" }) === null);
+  check("a range missing an end is refused",
+    windowFor({ period: "range", from: "2026-09-09" }) === null);
+  check("a range of nonsense is refused",
+    windowFor({ period: "range", from: "last tuesday", to: "today" }) === null);
+
   const yr = windowFor({ period: "year", year: "2026" });
   check("a year runs January to January", yr.from === "2026-01-01" && yr.to === "2027-01-01");
   check("a year counts 365 nights", nightsIn(yr.from, yr.to) === 365);
@@ -357,6 +378,97 @@ console.log("\n=== signed to the room ===");
 
   check("a guest who signed for nothing has no lines at all",
     shapeBreakdown([], facilities).bk1 === undefined);
+}
+
+
+// ---------- the month-end prompt ----------
+console.log("\n=== reports still owed ===");
+{
+  const { periodsDue } = require("../services/report");
+
+  const fresh = periodsDue("2026-09-13");
+  check("the month that just ended is offered first among the months",
+    fresh.find((d) => d.kind === "month").period === "2026-08");
+  check("the closed year is offered too", fresh.some((d) => d.kind === "year" && d.period === "2025"));
+  // Three months back and no further: a prompt reaching to 2019 is a prompt
+  // nobody reads, and any period can still be pulled by hand.
+  check("it does not reach back forever", fresh.filter((d) => d.kind === "month").length === 3);
+  check("the current month is never asked for, it has not ended",
+    fresh.every((d) => d.period !== "2026-09"));
+
+  const partly = periodsDue("2026-09-13", [{ kind: "month", period: "2026-08" }, { kind: "year", period: "2025" }]);
+  check("a month already taken is not asked for again",
+    partly.every((d) => d.period !== "2026-08"));
+  check("a year already taken is not asked for again",
+    partly.every((d) => d.kind !== "year"));
+  check("the ones still outstanding remain", partly.length === 2);
+
+  // January, where "last month" and "last year" are different years.
+  const january = periodsDue("2026-01-04");
+  check("in January the months roll back into the previous year",
+    january.find((d) => d.kind === "month").period === "2025-12");
+  check("...and the year just ended is the one offered",
+    january.find((d) => d.kind === "year").period === "2025");
+
+  check("nothing is outstanding once everything is taken",
+    periodsDue("2026-09-13", fresh).length === 0);
+}
+
+
+// ---------- the till: order state and split takings ----------
+console.log("\n=== till ===");
+{
+  const { tabState, partsOf, methodKey } = require("../services/till");
+
+  // The three states the bar was asked for, and voided, which is none of them.
+  check("an open table is unpaid", tabState({ status: "open" }) === "unpaid");
+  check("settled at the till is paid",
+    tabState({ status: "settled", settlement: "paid" }) === "paid");
+  check("settled onto a room is charged to the room",
+    tabState({ status: "settled", settlement: "room" }) === "room");
+  check("a voided order says so rather than reverting to unpaid",
+    tabState({ status: "settled", settlement: "paid", voided: true }) === "voided");
+  check("...even one that was on a room",
+    tabState({ status: "settled", settlement: "room", voided: true }) === "voided");
+
+  // A split with any room part leaves money on somebody's folio, so the badge
+  // has to say so — reporting it as simply "paid" is the bug worth catching.
+  const mixed = { status: "settled", settlement: "paid", parts: [
+    { settlement: "paid", amount: 20000, paymentMethod: "cash" },
+    { settlement: "room", amount: 20000, roomNumber: "204" },
+  ] };
+  check("a split with a room part reads as charged to the room", tabState(mixed) === "room");
+  check("a split paid entirely at the till reads as paid",
+    tabState({ status: "settled", settlement: "paid", parts: [
+      { settlement: "paid", amount: 10000, paymentMethod: "cash" },
+      { settlement: "paid", amount: 10000, paymentMethod: "transfer" },
+    ] }) === "paid");
+
+  // An unsplit bill records no parts at all, so the fallback has to reproduce
+  // the single settlement faithfully or every older order vanishes from the
+  // takings breakdown.
+  const plain = { status: "settled", settlement: "paid", total: 15000 };
+  check("a bill with no parts still yields one", partsOf(plain).length === 1);
+  check("...for its whole value", partsOf(plain)[0].amount === 15000);
+  check("...under its own settlement", partsOf(plain)[0].settlement === "paid");
+  check("a split yields its own parts", partsOf(mixed).length === 2);
+
+  check("room money is bucketed as the room, not as a payment method",
+    methodKey({ settlement: "room", paymentMethod: "cash" }) === "room");
+  check("till money is bucketed by how it was paid",
+    methodKey({ settlement: "paid", paymentMethod: "transfer" }) === "transfer");
+  check("a till payment with no method recorded falls back to cash",
+    methodKey({ settlement: "paid" }) === "cash");
+
+  // The whole point of splitting by part: the cash figure must not swallow
+  // money that actually went onto a room.
+  const takings = {};
+  partsOf(mixed).forEach((p) => { takings[methodKey(p)] = (takings[methodKey(p)] || 0) + p.amount; });
+  check("a split table lands in two buckets", Object.keys(takings).length === 2);
+  check("...and cash holds only the cash half", takings.cash === 20000);
+  check("...and the room holds only the room half", takings.room === 20000);
+  check("the buckets still add up to the bill",
+    Object.values(takings).reduce((a, b) => a + b, 0) === 40000);
 }
 
 
