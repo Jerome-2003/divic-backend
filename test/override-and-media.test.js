@@ -133,5 +133,45 @@ check("protocol-relative // is rejected", badHref("//evil.com") !== null);
 check("javascript: is rejected", badHref("javascript:alert(1)") !== null);
 check("plain http:// is rejected", badHref("http://insecure.com") !== null);
 
+// ---------- Cloudinary upload signatures ----------
+console.log("\n=== Cloudinary upload signature ===");
+{
+  const { signUpload, isConfigured } = require("../services/cloudinary");
+
+  // Unconfigured: the manager is told what is missing, not handed a broken
+  // upload that fails at Cloudinary.
+  delete process.env.CLOUDINARY_CLOUD_NAME;
+  delete process.env.CLOUDINARY_API_KEY;
+  delete process.env.CLOUDINARY_API_SECRET;
+  check("reports itself unconfigured when keys are absent", isConfigured() === false);
+  const missing = signUpload("image");
+  check("unconfigured upload is refused as 503", missing.ok === false && missing.status === 503);
+  check("...and names the variables to set", /CLOUDINARY_API_SECRET/.test(missing.error));
+
+  process.env.CLOUDINARY_CLOUD_NAME = "divic";
+  process.env.CLOUDINARY_API_KEY = "111";
+  process.env.CLOUDINARY_API_SECRET = "shh";
+  process.env.CLOUDINARY_FOLDER = "divic/site-content";
+
+  const bad = signUpload("document");
+  check("a media type that is not image or video is refused", bad.ok === false && bad.status === 400);
+
+  const img = signUpload("image");
+  check("image uploads go to the image endpoint", img.upload.uploadUrl === "https://api.cloudinary.com/v1_1/divic/image/upload");
+  check("video uploads go to the video endpoint", signUpload("video").upload.uploadUrl.endsWith("/video/upload"));
+  check("video is allowed to be larger than an image", signUpload("video").upload.maxBytes > img.upload.maxBytes);
+  check("the secret is never handed to the browser", JSON.stringify(img.upload).includes("shh") === false);
+
+  // The signature is Cloudinary's own recipe: signed params sorted, joined,
+  // secret appended, SHA-1. Recomputed here independently — if the service
+  // ever signs a different set of params than the browser sends, Cloudinary
+  // rejects every upload, and this is what catches that before a manager does.
+  const expected = require("crypto").createHash("sha1")
+    .update("folder=divic/site-content&timestamp=" + img.upload.timestamp + "shh")
+    .digest("hex");
+  check("signature matches Cloudinary's documented recipe", img.upload.signature === expected);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);
