@@ -4,6 +4,7 @@ const Booking = require("../models/Booking");
 const Room = require("../models/Room");
 const Guest = require("../models/Guest");
 const Rate = require("../models/Rate");
+const { priceStay, liveDiscounts } = require("../services/pricing");
 const { requireAuth, requireModule, requireOperational, scopeLocation } = require("../middleware/auth");
 const { isRoomAvailable, validRange, nightsBetween } = require("../services/availability");
 const { logAction } = require("../services/audit");
@@ -54,6 +55,7 @@ router.get("/", scopeLocation, async (req, res, next) => {
         ...b,
         roomCharges: f.roomCharges,
         facilityCharges: f.facilityCharges,
+        facilityBreakdown: f.facilityBreakdown,
         totalCharges: f.totalCharges,
         paid: f.paid,
         balance: f.balance,
@@ -107,16 +109,29 @@ router.post("/", scopeLocation, requireOperational("receptionist"), async (req, 
 
       const rateDoc = await Rate.findOne({ location: req.location }).session(session).lean();
       const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[req.location].rates;
-      const rate = prices[roomType || room.type];
+      const type = roomType || room.type;
+      const rate = prices[type];
       const n = nightsBetween(checkIn, checkOut);
+
+      // A walk-in gets the same offers a website guest gets. Nobody at the
+      // desk has to know which are running, or work out the arithmetic while
+      // somebody stands there waiting.
+      const priced = priceStay({
+        rate, nights: n, roomType: type, checkIn,
+        discounts: await liveDiscounts(req.location),
+      });
 
       created = (await Booking.create([{
         ref: await makeRef(req.location),
         location: req.location,
         guest: guestDoc._id,
-        room: room._id, roomNumber: room.number, roomType: roomType || room.type,
+        room: room._id, roomNumber: room.number, roomType: type,
         checkIn, checkOut, nights: n,
-        rate, totalCharge: rate * n,
+        rate,
+        totalCharge: priced.total,
+        grossCharge: priced.gross,
+        discountTotal: priced.discountTotal,
+        discounts: priced.discounts,
         adults, children, source, specialRequests,
         createdBy: req.user.id,
       }], { session }))[0];
@@ -242,6 +257,10 @@ router.post("/:id/check-out", requireOperational("receptionist"), async (req, re
         balance,
         roomCharges: folio.roomCharges,
         facilityCharges: folio.facilityCharges,
+        // Named on the refusal too: a receptionist deciding whether to override
+        // a checkout needs to know a ₦40,000 balance is the gym and not the
+        // room, because those are two different conversations to have.
+        facilityBreakdown: folio.facilityBreakdown,
         paid: folio.paid,
         hint: "Take the payment first, or send allowUnpaid to check out with the balance owing.",
       });
@@ -355,7 +374,18 @@ router.patch("/:id/room", async (req, res, next) => {
         return res.status(400).json({ error: "No rate is set for " + room.type + " rooms at this property." });
       }
       booking.rate = newRate;
-      booking.totalCharge = newRate * booking.nights;
+      // Re-priced through the same path a new booking takes, so a guest moved
+      // to a different room keeps the offer they were given rather than
+      // quietly losing it at the moment they are being done a favour.
+      const priced = priceStay({
+        rate: newRate, nights: booking.nights, roomType: room.type,
+        checkIn: booking.checkIn,
+        discounts: await liveDiscounts(booking.location),
+      });
+      booking.totalCharge = priced.total;
+      booking.grossCharge = priced.gross;
+      booking.discountTotal = priced.discountTotal;
+      booking.discounts = priced.discounts;
     }
 
     booking.room = room._id;

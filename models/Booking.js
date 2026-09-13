@@ -21,7 +21,25 @@ const bookingSchema = new mongoose.Schema(
 
     nights: { type: Number, required: true, min: 1 },
     rate: { type: Number, required: true, min: 0 },   // nightly rate at time of booking
+    // What the guest owes for the room, after any offer that was running when
+    // the booking was taken. Everything downstream — folios, balances,
+    // analytics — reads this and nothing else, which is why discounts could be
+    // added without any of it changing.
     totalCharge: { type: Number, required: true, min: 0 },
+
+    // The same figure before the offer came off, and a copy of the offers
+    // themselves as they stood that day. An offer can be edited or deleted
+    // afterwards; a bill a guest queries six weeks later still has to explain
+    // itself, so the words and the amounts are written down here rather than
+    // looked up again later.
+    grossCharge: { type: Number, min: 0 },
+    discountTotal: { type: Number, default: 0, min: 0 },
+    discounts: [{
+      name: String,
+      kind: { type: String, enum: ["percent", "fixed"] },
+      value: Number,
+      amount: Number,
+    }],
 
     adults: { type: Number, default: 1, min: 1 },
     children: { type: Number, default: 0, min: 0 },

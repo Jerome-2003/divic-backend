@@ -45,6 +45,10 @@ router.get("/folios", scopeLocation, async (req, res, next) => {
         checkIn: b.checkIn, checkOut: b.checkOut, nights: b.nights, rate: b.rate,
         roomCharges: f.roomCharges,
         facilityCharges: f.facilityCharges,
+        // Which facilities, by name. Only ever charges the guest chose to sign
+        // to their room; anything paid at a till is the facility's own
+        // business and never reaches a folio.
+        facilityBreakdown: f.facilityBreakdown,
         charges: f.totalCharges,
         paid: f.paid,
         balance: f.balance,
@@ -80,6 +84,7 @@ router.get("/folio/:bookingId", async (req, res, next) => {
       currency: "NGN",
       roomCharges: f.roomCharges,
       facilityCharges: f.facilityCharges,
+      facilityBreakdown: f.facilityBreakdown,
       totalCharges: f.totalCharges,
       paid: f.paid,
       balance: f.balance,

@@ -173,5 +173,304 @@ console.log("\n=== Cloudinary upload signature ===");
 }
 
 
+// ---------- discount arithmetic ----------
+console.log("\n=== discounts ===");
+{
+  const { priceStay, applies } = require("../services/pricing");
+  const on = (d) => ({ active: true, minNights: 1, roomTypes: [], ...d });
+  const stay = { rate: 50000, nights: 4, roomType: "deluxe", checkIn: "2026-12-10" };
+
+  check("no offers leaves the price alone",
+    priceStay({ ...stay, discounts: [] }).total === 200000);
+
+  const pct = priceStay({ ...stay, discounts: [on({ name: "December", kind: "percent", value: 15 })] });
+  check("a percentage comes off the whole stay", pct.total === 170000 && pct.discountTotal === 30000);
+  check("the gross is kept so a bill can explain itself", pct.gross === 200000);
+
+  const fixed = priceStay({ ...stay, discounts: [on({ name: "Long stay", kind: "fixed", value: 20000 })] });
+  check("a flat amount comes off the stay, not each night", fixed.total === 180000);
+
+  // Both at once — the thing the manager was promised when they were told
+  // offers are "calculated together".
+  const both = priceStay({ ...stay, discounts: [
+    on({ name: "December", kind: "percent", value: 15 }),
+    on({ name: "Long stay", kind: "fixed", value: 20000 }),
+  ] });
+  check("offers stack", both.total === 150000);
+  check("percentage is taken before the flat amount", both.discounts[0].amount === 30000);
+  check("each offer is credited with what it took off",
+    both.discounts.reduce((a, d) => a + d.amount, 0) === both.discountTotal);
+
+  // Two percentages must total their sum, not compound, or the website's
+  // headline and the bill disagree.
+  const two = priceStay({ ...stay, discounts: [
+    on({ name: "A", kind: "percent", value: 10 }),
+    on({ name: "B", kind: "percent", value: 10 }),
+  ] });
+  check("two percentages add rather than compound", two.discountTotal === 40000);
+  check("...and their credited shares still add up to it",
+    two.discounts.reduce((a, d) => a + d.amount, 0) === 40000);
+
+  check("a percentage is capped short of free",
+    priceStay({ ...stay, discounts: [on({ name: "Absurd", kind: "percent", value: 400 })] }).total === 20000);
+  check("a flat amount can never make the bill negative",
+    priceStay({ ...stay, discounts: [on({ name: "Absurd", kind: "fixed", value: 900000 })] }).total === 0);
+
+  // Applicability.
+  check("an inactive offer is ignored",
+    priceStay({ ...stay, discounts: [{ active: false, name: "Off", kind: "percent", value: 50 }] }).total === 200000);
+  check("an offer for other room types is ignored",
+    priceStay({ ...stay, discounts: [on({ name: "Suites", kind: "percent", value: 50, roomTypes: ["superior"] })] }).total === 200000);
+  check("an offer for this room type applies",
+    priceStay({ ...stay, discounts: [on({ name: "Deluxe", kind: "percent", value: 50, roomTypes: ["deluxe"] })] }).total === 100000);
+  check("a stay too short for the offer is ignored",
+    priceStay({ ...stay, nights: 2, discounts: [on({ name: "Week", kind: "percent", value: 50, minNights: 7 })] }).total === 100000);
+
+  // Judged on arrival date, which is the rule a receptionist can explain.
+  const december = on({ name: "Dec", kind: "percent", value: 20, startsOn: "2026-12-01", endsOn: "2026-12-31" });
+  check("an offer applies to an arrival inside its window",
+    applies(december, { roomType: "deluxe", checkIn: "2026-12-10", nights: 4 }) === true);
+  check("an arrival before the window misses it",
+    applies(december, { roomType: "deluxe", checkIn: "2026-11-30", nights: 4 }) === false);
+  check("an arrival after the window misses it",
+    applies(december, { roomType: "deluxe", checkIn: "2027-01-02", nights: 4 }) === false);
+}
+
+
+// ---------- report periods and combining ----------
+console.log("\n=== month and year windows ===");
+{
+  const { windowFor, nightsIn, combine } = require("../services/report");
+
+  const sep = windowFor({ period: "month", month: "2026-09" });
+  check("a month runs to the first of the next", sep.from === "2026-09-01" && sep.to === "2026-10-01");
+  // A window that ends a day early drops the busiest day of the month and
+  // nothing on the printed page would look wrong.
+  check("a 30-day month counts 30 nights", nightsIn(sep.from, sep.to) === 30);
+  check("a month is named the way a person would", sep.label === "September 2026");
+
+  const dec = windowFor({ period: "month", month: "2026-12" });
+  check("December rolls into the next year", dec.to === "2027-01-01");
+  check("...and still counts 31 nights", nightsIn(dec.from, dec.to) === 31);
+
+  const feb = windowFor({ period: "month", month: "2028-02" });
+  check("February in a leap year counts 29 nights", nightsIn(feb.from, feb.to) === 29);
+
+  // An arbitrary stretch of days, which is what somebody asking "how did the
+  // long weekend go?" actually wants.
+  const range = windowFor({ period: "range", from: "2026-09-03", to: "2026-09-09" });
+  check("a range ends the day after the last day asked for", range.to === "2026-09-10");
+  // "3rd to the 9th" is seven days to everyone who is not a computer.
+  check("...so the 3rd to the 9th is seven nights, not six", nightsIn(range.from, range.to) === 7);
+  check("a range is labelled the way a person writes dates",
+    range.label === "3 September 2026 to 9 September 2026");
+  check("the last day asked for is handed back for the date pickers", range.lastDay === "2026-09-09");
+
+  const oneDay = windowFor({ period: "range", from: "2026-09-03", to: "2026-09-03" });
+  check("a single day is one night", nightsIn(oneDay.from, oneDay.to) === 1);
+  check("...and is labelled as just that day", oneDay.label === "3 September 2026");
+
+  check("a backwards range is refused",
+    windowFor({ period: "range", from: "2026-09-09", to: "2026-09-03" }) === null);
+  check("a range missing an end is refused",
+    windowFor({ period: "range", from: "2026-09-09" }) === null);
+  check("a range of nonsense is refused",
+    windowFor({ period: "range", from: "last tuesday", to: "today" }) === null);
+
+  const yr = windowFor({ period: "year", year: "2026" });
+  check("a year runs January to January", yr.from === "2026-01-01" && yr.to === "2027-01-01");
+  check("a year counts 365 nights", nightsIn(yr.from, yr.to) === 365);
+  const leap = windowFor({ period: "year", year: "2028" });
+  check("a leap year counts 366", nightsIn(leap.from, leap.to) === 366);
+
+  check("a month of 13 is refused", windowFor({ period: "month", month: "2026-13" }) === null);
+  check("a month of 00 is refused", windowFor({ period: "month", month: "2026-00" }) === null);
+  check("nonsense is refused", windowFor({ period: "month", month: "September" }) === null);
+  check("a year outside living memory is refused", windowFor({ period: "year", year: "1066" }) === null);
+
+  // Two properties of different sizes, which is the case the obvious
+  // implementation gets wrong.
+  const branch = (o) => ({
+    id: o.id, name: o.name,
+    rooms: {
+      sellable: o.sellable, bookings: o.bookings, nightsSold: o.nightsSold,
+      nightsAvailable: o.nightsAvailable, occupancyPercent: 0,
+      averageDailyRate: Math.round(o.revenue / o.nightsSold), revPAR: 0,
+      revenue: o.revenue, discountsGiven: o.discounts || 0,
+      byRoomType: o.byRoomType || {}, bySource: o.bySource || {},
+    },
+    facilities: { total: o.facilities, chargedToRooms: o.facilities, paidAtTill: 0, byFacility: o.byFacility || [] },
+    collected: { byMethod: o.byMethod || {}, payments: o.payments || 0, cardFees: o.cardFees || 0, total: o.collected || 0 },
+    revenue: { rooms: o.revenue, facilities: o.facilities, total: o.revenue + o.facilities },
+  });
+
+  const small = branch({ id: "exclusive", name: "Divic Exclusive", sellable: 15,
+    bookings: 10, nightsSold: 100, nightsAvailable: 450, revenue: 5000000, facilities: 400000,
+    byRoomType: { deluxe: { bookings: 10, nights: 100, revenue: 5000000 } },
+    bySource: { "walk-in": 6, website: 4 }, byMethod: { cash: 1000000 }, collected: 1000000, payments: 5 });
+  const big = branch({ id: "urban", name: "Divic Urban", sellable: 21,
+    bookings: 30, nightsSold: 400, nightsAvailable: 630, revenue: 12000000, facilities: 900000,
+    byRoomType: { deluxe: { bookings: 30, nights: 400, revenue: 12000000 } },
+    bySource: { website: 30 }, byMethod: { cash: 500000, transfer: 2000000 }, collected: 2500000, payments: 20 });
+
+  const all = combine([small, big]);
+  check("room revenue adds across properties", all.revenue.rooms === 17000000);
+  check("facility revenue adds across properties", all.revenue.facilities === 1300000);
+  check("the business total is both together", all.revenue.total === 18300000);
+  check("nights sold add", all.rooms.nightsSold === 500);
+  check("occupancy is worked out from combined nights", all.rooms.occupancyPercent === Math.round((500 / 1080) * 100));
+  // Averaging the two branch rates gives 40,000 — true of neither property and
+  // of the business least of all.
+  check("the average rate is recomputed, not averaged between branches",
+    all.rooms.averageDailyRate === Math.round(17000000 / 500));
+  check("...which is not the average of the two branch rates",
+    all.rooms.averageDailyRate !== Math.round((small.rooms.averageDailyRate + big.rooms.averageDailyRate) / 2));
+  check("room types merge across properties",
+    all.rooms.byRoomType.deluxe.nights === 500 && all.rooms.byRoomType.deluxe.revenue === 17000000);
+  check("booking sources merge", all.rooms.bySource.website === 34 && all.rooms.bySource["walk-in"] === 6);
+  check("payment methods merge", all.collected.byMethod.cash === 1500000 && all.collected.byMethod.transfer === 2000000);
+  check("collected totals add", all.collected.total === 3500000 && all.collected.payments === 25);
+
+  const alone = combine([small]);
+  check("one property on its own reports itself unchanged",
+    alone.revenue.total === small.revenue.total && alone.rooms.averageDailyRate === small.rooms.averageDailyRate);
+}
+
+
+// ---------- what appears on a front desk bill ----------
+console.log("\n=== signed to the room ===");
+{
+  const { shapeBreakdown } = require("../services/folio");
+
+  const row = (booking, facility, amount, items = 1) =>
+    ({ _id: { booking, facility }, amount, items });
+
+  const facilities = [
+    { _id: "bar1", name: "Rooftop Bar", type: "bar" },
+    { _id: "pool1", name: "Pool", type: "pool" },
+    { _id: "gym1", name: "Gym", type: "gym" },
+  ];
+
+  const out = shapeBreakdown([
+    row("bk1", "pool1", 6000),
+    row("bk1", "bar1", 18000, 7),
+    row("bk2", "gym1", 40000),
+  ], facilities);
+
+  check("each booking gets only its own charges",
+    out.bk1.length === 2 && out.bk2.length === 1);
+  // The whole point: the pool's money must not appear under the bar's name.
+  check("facilities are named, not lumped under one",
+    out.bk1.map((l) => l.name).sort().join("|") === "Pool|Rooftop Bar");
+  check("the largest line is first, since that is the one being queried",
+    out.bk1[0].name === "Rooftop Bar" && out.bk1[0].amount === 18000);
+  check("the facility's type comes through for the bill", out.bk1[1].type === "pool");
+  check("how many items made up the line is kept", out.bk1[0].items === 7);
+  check("the lines add up to what the folio says is owed",
+    out.bk1.reduce((a, l) => a + l.amount, 0) === 24000);
+
+  // A facility deleted after a guest signed for something there.
+  const orphan = shapeBreakdown([row("bk3", "gone", 5000)], facilities);
+  check("a deleted facility does not drop the charge off the bill",
+    orphan.bk3.length === 1 && orphan.bk3[0].amount === 5000);
+  check("...and it is named plainly rather than left blank",
+    orphan.bk3[0].name === "A facility");
+
+  check("a guest who signed for nothing has no lines at all",
+    shapeBreakdown([], facilities).bk1 === undefined);
+}
+
+
+// ---------- the month-end prompt ----------
+console.log("\n=== reports still owed ===");
+{
+  const { periodsDue } = require("../services/report");
+
+  const fresh = periodsDue("2026-09-13");
+  check("the month that just ended is offered first among the months",
+    fresh.find((d) => d.kind === "month").period === "2026-08");
+  check("the closed year is offered too", fresh.some((d) => d.kind === "year" && d.period === "2025"));
+  // Three months back and no further: a prompt reaching to 2019 is a prompt
+  // nobody reads, and any period can still be pulled by hand.
+  check("it does not reach back forever", fresh.filter((d) => d.kind === "month").length === 3);
+  check("the current month is never asked for, it has not ended",
+    fresh.every((d) => d.period !== "2026-09"));
+
+  const partly = periodsDue("2026-09-13", [{ kind: "month", period: "2026-08" }, { kind: "year", period: "2025" }]);
+  check("a month already taken is not asked for again",
+    partly.every((d) => d.period !== "2026-08"));
+  check("a year already taken is not asked for again",
+    partly.every((d) => d.kind !== "year"));
+  check("the ones still outstanding remain", partly.length === 2);
+
+  // January, where "last month" and "last year" are different years.
+  const january = periodsDue("2026-01-04");
+  check("in January the months roll back into the previous year",
+    january.find((d) => d.kind === "month").period === "2025-12");
+  check("...and the year just ended is the one offered",
+    january.find((d) => d.kind === "year").period === "2025");
+
+  check("nothing is outstanding once everything is taken",
+    periodsDue("2026-09-13", fresh).length === 0);
+}
+
+
+// ---------- the till: order state and split takings ----------
+console.log("\n=== till ===");
+{
+  const { tabState, partsOf, methodKey } = require("../services/till");
+
+  // The three states the bar was asked for, and voided, which is none of them.
+  check("an open table is unpaid", tabState({ status: "open" }) === "unpaid");
+  check("settled at the till is paid",
+    tabState({ status: "settled", settlement: "paid" }) === "paid");
+  check("settled onto a room is charged to the room",
+    tabState({ status: "settled", settlement: "room" }) === "room");
+  check("a voided order says so rather than reverting to unpaid",
+    tabState({ status: "settled", settlement: "paid", voided: true }) === "voided");
+  check("...even one that was on a room",
+    tabState({ status: "settled", settlement: "room", voided: true }) === "voided");
+
+  // A split with any room part leaves money on somebody's folio, so the badge
+  // has to say so — reporting it as simply "paid" is the bug worth catching.
+  const mixed = { status: "settled", settlement: "paid", parts: [
+    { settlement: "paid", amount: 20000, paymentMethod: "cash" },
+    { settlement: "room", amount: 20000, roomNumber: "204" },
+  ] };
+  check("a split with a room part reads as charged to the room", tabState(mixed) === "room");
+  check("a split paid entirely at the till reads as paid",
+    tabState({ status: "settled", settlement: "paid", parts: [
+      { settlement: "paid", amount: 10000, paymentMethod: "cash" },
+      { settlement: "paid", amount: 10000, paymentMethod: "transfer" },
+    ] }) === "paid");
+
+  // An unsplit bill records no parts at all, so the fallback has to reproduce
+  // the single settlement faithfully or every older order vanishes from the
+  // takings breakdown.
+  const plain = { status: "settled", settlement: "paid", total: 15000 };
+  check("a bill with no parts still yields one", partsOf(plain).length === 1);
+  check("...for its whole value", partsOf(plain)[0].amount === 15000);
+  check("...under its own settlement", partsOf(plain)[0].settlement === "paid");
+  check("a split yields its own parts", partsOf(mixed).length === 2);
+
+  check("room money is bucketed as the room, not as a payment method",
+    methodKey({ settlement: "room", paymentMethod: "cash" }) === "room");
+  check("till money is bucketed by how it was paid",
+    methodKey({ settlement: "paid", paymentMethod: "transfer" }) === "transfer");
+  check("a till payment with no method recorded falls back to cash",
+    methodKey({ settlement: "paid" }) === "cash");
+
+  // The whole point of splitting by part: the cash figure must not swallow
+  // money that actually went onto a room.
+  const takings = {};
+  partsOf(mixed).forEach((p) => { takings[methodKey(p)] = (takings[methodKey(p)] || 0) + p.amount; });
+  check("a split table lands in two buckets", Object.keys(takings).length === 2);
+  check("...and cash holds only the cash half", takings.cash === 20000);
+  check("...and the room holds only the room half", takings.room === 20000);
+  check("the buckets still add up to the bill",
+    Object.values(takings).reduce((a, b) => a + b, 0) === 40000);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);

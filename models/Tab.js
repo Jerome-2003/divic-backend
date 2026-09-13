@@ -31,6 +31,16 @@ const tabSchema = new mongoose.Schema(
     tableName: { type: String, required: true, trim: true },
     guestName: { type: String, trim: true },
 
+    // The room, attached when the table is opened rather than only at the
+    // moment of payment. A bartender looking at a list of open tabs needs to
+    // know whose they are; finding that out only when the money is taken is
+    // too late to be useful, and it is also when mistakes cost most.
+    //
+    // Optional, because a bar sells to people who are not staying here. A walk
+    // -in has a table and no room, and that has to keep working.
+    roomNumber: { type: String, trim: true },
+    guestSurname: { type: String, trim: true },
+
     status: { type: String, enum: ["open", "settled"], default: "open", index: true },
     lines: [tabLineSchema],
 
@@ -41,8 +51,50 @@ const tabSchema = new mongoose.Schema(
     // The Charge this tab produced on settling. Everything downstream —
     // billing, the folio, analytics — reads Charges, so a tab has to become one
     // rather than become a second, parallel source of truth about money.
+    //
+    // A split bill produces several. `charge` holds the first for the sake of
+    // everything written before splits existed; `charges` holds them all, and
+    // is what anything new should read.
     charge: { type: mongoose.Schema.Types.ObjectId, ref: "Charge" },
+    charges: [{ type: mongoose.Schema.Types.ObjectId, ref: "Charge" }],
+
+    /**
+     * How the bill was actually settled, one entry per way.
+     *
+     * A single entry is the ordinary case and means what `settlement` has
+     * always meant. More than one is a split: four friends where two pay cash
+     * and two sign it to their rooms, or one guest paying half now and half on
+     * the room. Each part records what it was, who it went to, and how much,
+     * because "the table paid ₦40,000" is not enough to answer a query about
+     * any one of those four people.
+     */
+    parts: [{
+      settlement: { type: String, enum: ["room", "paid"], required: true },
+      amount: { type: Number, required: true, min: 1 },
+      paymentMethod: { type: String },
+      booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking" },
+      roomNumber: String,
+      guestSurname: String,
+      charge: { type: mongoose.Schema.Types.ObjectId, ref: "Charge" },
+      payment: { type: mongoose.Schema.Types.ObjectId, ref: "Payment" },
+    }],
+
     total: { type: Number, min: 0, default: 0 },
+
+    /**
+     * Voided after the money was taken — a manager's decision, never the
+     * bartender's own.
+     *
+     * The tab is not deleted and its lines are not touched. What was ordered
+     * really was ordered; what is being undone is the money. The charges and
+     * payments it produced are voided in place with the same reason, so the
+     * folio, the till and the month's figures all stop counting it at once and
+     * the activity log still says who did it and why.
+     */
+    voided: { type: Boolean, default: false },
+    voidReason: { type: String, trim: true },
+    voidedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    voidedAt: Date,
 
     // Printed on the receipt so a guest and the desk can refer to the same
     // piece of paper. Assigned at settle time.

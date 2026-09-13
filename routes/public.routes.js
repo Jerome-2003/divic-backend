@@ -2,6 +2,8 @@ const router = require("express").Router();
 const rateLimit = require("express-rate-limit");
 const BookingRequest = require("../models/BookingRequest");
 const Rate = require("../models/Rate");
+const Discount = require("../models/Discount");
+const { priceStay, liveDiscounts, publicDiscount } = require("../services/pricing");
 const Facility = require("../models/Facility");
 const { availabilityByType, validRange, nightsBetween } = require("../services/availability");
 const { LOCATIONS, ROOM_PLAN } = require("../utils/constants");
@@ -53,6 +55,17 @@ router.get("/properties", async (_req, res, next) => {
     const rateDocs = await Rate.find().lean();
     const rateBy = Object.fromEntries(rateDocs.map((d) => [d.location, Object.fromEntries(Object.entries(d.prices))]));
 
+    // Offers ship as their own list, not folded into the rate card. A guest
+    // reading "₦45,000 a night" and a guest reading "15% off in December" are
+    // being told two different things, and the second only means anything if
+    // it is stated. The arithmetic still happens on its own at the moment of
+    // booking — see services/pricing.js.
+    const offers = await Discount.find({ active: true }).sort({ createdAt: -1 }).lean();
+    const offersBy = offers.reduce((a, d) => {
+      (a[d.location] = a[d.location] || []).push(publicDiscount(d));
+      return a;
+    }, {});
+
     // Only open facilities are published. The public site has no business
     // telling a prospective guest the gym is under maintenance, and the status
     // note is an internal message ("Pump being serviced") that never ships.
@@ -77,6 +90,7 @@ router.get("/properties", async (_req, res, next) => {
         id: l.id, name: l.name, address: l.address, phone: l.phone,
         totalRooms: plan.length, currency: "NGN", roomTypes: types,
         facilities: facilitiesBy[l.id] || [],
+        discounts: offersBy[l.id] || [],
       };
     }));
   } catch (e) { next(e); }
@@ -95,15 +109,26 @@ router.get("/availability", async (req, res, next) => {
     const rateDoc = await Rate.findOne({ location }).lean();
     const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[location].rates;
     const n = nightsBetween(checkIn, checkOut);
+    const offers = await liveDiscounts(location);
 
     res.json({
       location, checkIn, checkOut, nights: n, currency: "NGN",
       // Availability is exposed as counts only. Never publish room numbers to
       // the public web — that tells a stranger exactly which rooms are empty.
-      roomTypes: LOCATIONS[location].typeOrder.map((type) => ({
-        type, available: counts[type] || 0,
-        rate: prices[type], total: prices[type] * n,
-      })),
+      roomTypes: LOCATIONS[location].typeOrder.map((type) => {
+        const priced = priceStay({ rate: prices[type], nights: n, roomType: type, checkIn, discounts: offers });
+        return {
+          type, available: counts[type] || 0,
+          rate: prices[type],
+          // `total` stays what the guest pays, so a site that never learns
+          // about offers still quotes the right number. The strike-through
+          // price and the saving are there for one that does.
+          total: priced.total,
+          fullTotal: priced.gross,
+          discountTotal: priced.discountTotal,
+          discounts: priced.discounts,
+        };
+      }),
     });
   } catch (e) { next(e); }
 });
@@ -154,13 +179,20 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
     const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[location].rates;
     const rate = prices[b.roomType];
     const nights = nightsBetween(b.checkIn, b.checkOut);
+    const priced = priceStay({
+      rate, nights, roomType: b.roomType, checkIn: b.checkIn,
+      discounts: await liveDiscounts(location),
+    });
 
     const counts = await availabilityByType(location, b.checkIn, b.checkOut);
     const likelyAvailable = (counts[b.roomType] || 0) > 0;
 
     const payment = { required: false, verified: false };
     if (b.paystackReference) {
-      const check = await verifyTransaction(clean(b.paystackReference, 100), rate * nights * 100);
+      // Verified against the discounted total — the figure the guest was
+      // shown. Checking against the full rate would reject every payment made
+      // while an offer was running.
+      const check = await verifyTransaction(clean(b.paystackReference, 100), priced.total * 100);
       payment.paystackReference = clean(b.paystackReference, 100);
       payment.required = true;
       payment.verified = check.ok;
@@ -177,7 +209,8 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
       guestName: name, guestPhone: phone,
       guestEmail: clean(b.guestEmail, 120).toLowerCase() || undefined,
       specialRequests: clean(b.specialRequests, 500) || undefined,
-      quotedRate: rate, quotedTotal: rate * nights,
+      quotedRate: rate,
+      quotedTotal: priced.total, quotedGross: priced.gross, discounts: priced.discounts,
       payment,
       sourceIp: req.headers["x-forwarded-for"] || req.ip,
       userAgent: clean(req.headers["user-agent"], 200),
@@ -209,7 +242,7 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
         location, type: "request:new", urgent: true,
         title: "New website request",
         body: `${doc.guestName} · ${doc.checkIn} → ${doc.checkOut} · ${doc.reference}`,
-        entity: "BookingRequest", entityId: doc._id, href: "/requests",
+        entity: "BookingRequest", entityId: doc._id, href: "/front-desk?tab=requests",
       });
     }
 
@@ -225,7 +258,8 @@ router.post("/booking-requests", requestLimiter, async (req, res, next) => {
       location: LOCATIONS[location].name,
       roomType: doc.roomType,
       checkIn: doc.checkIn, checkOut: doc.checkOut, nights,
-      quotedRate: rate, quotedTotal: rate * nights, currency: "NGN",
+      quotedRate: rate, quotedTotal: priced.total, currency: "NGN",
+      fullTotal: priced.gross, discountTotal: priced.discountTotal, discounts: priced.discounts,
       paid: !!doc.payment.verified,
       bookingRef: doc.booking ? (await require("../models/Booking").findById(doc.booking).select("ref").lean())?.ref : undefined,
       likelyAvailable,
@@ -274,7 +308,13 @@ router.get("/quote", quoteLimiter, async (req, res, next) => {
     const prices = rateDoc ? Object.fromEntries(Object.entries(rateDoc.prices)) : LOCATIONS[location].rates;
     const rate = prices[roomType];
     const nights = nightsBetween(checkIn, checkOut);
-    const quote = grossUp(rate * nights);
+    // The offer comes off before the card fee is worked out, so the guest is
+    // not charged a processing fee on money they are not paying.
+    const priced = priceStay({
+      rate, nights, roomType, checkIn,
+      discounts: await liveDiscounts(location),
+    });
+    const quote = grossUp(priced.total);
 
     const counts = await availabilityByType(location, checkIn, checkOut);
 
@@ -283,6 +323,11 @@ router.get("/quote", quoteLimiter, async (req, res, next) => {
       roomType, checkIn, checkOut, nights,
       rate,
       roomTotal: quote.roomTotal,
+      // Shown beside the room total as a struck-through price and a saving —
+      // the offer is only worth running if the guest can see it working.
+      fullRoomTotal: priced.gross,
+      discountTotal: priced.discountTotal,
+      discounts: priced.discounts,
       paystackFee: quote.fee,
       totalPayable: quote.totalPayable,
       currency: "NGN",
@@ -528,6 +573,17 @@ router.post("/faq/ask", askLimiter, async (req, res, next) => {
 
     const rateDocs = await Rate.find().lean();
     const rateBy = Object.fromEntries(rateDocs.map((d) => [d.location, Object.fromEntries(Object.entries(d.prices))]));
+
+    // Offers ship as their own list, not folded into the rate card. A guest
+    // reading "₦45,000 a night" and a guest reading "15% off in December" are
+    // being told two different things, and the second only means anything if
+    // it is stated. The arithmetic still happens on its own at the moment of
+    // booking — see services/pricing.js.
+    const offers = await Discount.find({ active: true }).sort({ createdAt: -1 }).lean();
+    const offersBy = offers.reduce((a, d) => {
+      (a[d.location] = a[d.location] || []).push(publicDiscount(d));
+      return a;
+    }, {});
     const facilities = await Facility.find({ status: "open" }).select("location name type openingHours").lean();
 
     const information = {

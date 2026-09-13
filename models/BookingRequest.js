@@ -23,7 +23,16 @@ const bookingRequestSchema = new mongoose.Schema(
     specialRequests: { type: String, trim: true, maxlength: 500 },
 
     quotedRate: { type: Number, required: true },     // rate shown on the website
+    // Net of any offer running when the request was lodged — this is the
+    // figure the guest saw and the figure Paystack is asked for.
     quotedTotal: { type: Number, required: true },
+    quotedGross: { type: Number },                   // before the offer came off
+    discounts: [{
+      name: String,
+      kind: { type: String, enum: ["percent", "fixed"] },
+      value: Number,
+      amount: Number,
+    }],
 
     // pending  — waiting on the front desk
     // accepted — converted into a Booking
