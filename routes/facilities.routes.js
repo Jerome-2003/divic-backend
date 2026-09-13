@@ -22,7 +22,7 @@ const surnameOf = (name) => String(name || "").trim().split(/\s+/).pop() || "";
 const publicFacility = (f, user) => ({
   id: f._id, location: f.location, name: f.name, slug: f.slug, type: f.type,
   sellsItems: f.sellsItems, status: f.status, statusNote: f.statusNote || null,
-  openingHours: f.openingHours || null,
+  openingHours: f.openingHours || null, entryFee: f.entryFee || 0,
   // Convenience for the frontend so a bartender is only offered their own
   // tills. Not a security boundary — that is requireAssignedFacility.
   assignedToMe: user.role === "facility"
@@ -44,28 +44,43 @@ router.get("/", scopeLocation, async (req, res, next) => {
 });
 
 /**
- * PATCH /api/facilities/:id  { status, note }
+ * PATCH /api/facilities/:id  { status, note, entryFee? }
  * Managers and owners, plus facility staff for the facilities they cover.
- * Nothing else about a facility is editable here — the name, type and whether
- * it sells anything come from the seed.
+ * The name, type and whether it sells anything come from the seed and stay
+ * uneditable. `entryFee` is the exception and is manager/owner only — it is a
+ * price, and pricing is not an attendant's call.
  */
 router.patch("/:id", requireModule("facilities"), requireAssignedFacility("id"), async (req, res, next) => {
   try {
-    const { status, note } = req.body;
+    const { status, note, entryFee } = req.body;
     if (!FACILITY_STATUSES.includes(status)) {
       return res.status(400).json({ error: "A facility can be open, closed or under maintenance." });
     }
     const facility = req.facility;
-    const before = { status: facility.status, statusNote: facility.statusNote };
+    const before = { status: facility.status, statusNote: facility.statusNote, entryFee: facility.entryFee };
     facility.status = status;
     if (note !== undefined) facility.statusNote = clean(note, 300);
+
+    if (entryFee !== undefined) {
+      if (!["manager", "owner"].includes(req.user.role)) {
+        return res.status(403).json({ error: "Only a manager or the owner can change an entry fee." });
+      }
+      if (!["pool", "gym"].includes(facility.type)) {
+        return res.status(400).json({ error: "Only a pool or a gym charges an entry fee." });
+      }
+      const fee = Number(entryFee);
+      if (!Number.isFinite(fee) || fee < 0) return res.status(400).json({ error: "Enter a valid entry fee." });
+      facility.entryFee = fee;
+    }
+
     facility.updatedBy = req.user.id;
     await facility.save();
 
     logAction(req, {
-      action: "Set " + facility.name + " to " + status + (facility.statusNote ? " — " + facility.statusNote : ""),
+      action: "Set " + facility.name + " to " + status + (facility.statusNote ? " — " + facility.statusNote : "") +
+        (entryFee !== undefined ? " (entry fee " + facility.entryFee + " naira)" : ""),
       entity: "Facility", entityId: facility._id, location: facility.location,
-      before, after: { status: facility.status, statusNote: facility.statusNote },
+      before, after: { status: facility.status, statusNote: facility.statusNote, entryFee: facility.entryFee },
     });
     req.app.get("io")?.to("loc:" + facility.location).emit("facility:updated", publicFacility(facility, req.user));
     res.json(publicFacility(facility, req.user));
