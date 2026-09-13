@@ -123,8 +123,12 @@ router.get("/:facilityId/menu", requireModule("pos"), requireAssignedFacility(),
 
 /**
  * POST /api/facilities/:facilityId/menu   { name, category, price }
- * Manager and owner only. What a facility charges is a pricing decision, the
- * same as room rates — a bartender sells from the list, they do not write it.
+ *
+ * Manager and owner only, and so is every other write below. What a facility
+ * sells and for how much is a pricing decision, the same as room rates: a
+ * bartender sells from the list, they do not write it — not the prices, not
+ * the items, and not whether an item is on the list at all. Reading the menu
+ * is open to whoever is working the till, because selling from it is their job.
  */
 router.post("/:facilityId/menu", requireRole("manager", "owner"), requireAssignedFacility(), async (req, res, next) => {
   try {
@@ -153,39 +157,11 @@ router.post("/:facilityId/menu", requireRole("manager", "owner"), requireAssigne
 });
 
 /**
- * PATCH /api/facilities/:facilityId/menu/:itemId/availability  { active }
+ * PATCH /api/facilities/:facilityId/menu/:itemId  { name?, price?, category?, active? }
  *
- * Whether the bar can sell it right now, which is a different question from
- * what it costs. The person who knows the Star has run out is the bartender,
- * at 9pm, with a guest waiting — and making them find a manager to say so means
- * they will instead keep selling something that is not there.
- *
- * Deliberately its own route. It cannot touch the name, the price or the
- * category: pricing stays a manager's decision, exactly as room rates do.
+ * Including `active` — taking an item off the list is a change to the menu and
+ * belongs with the rest of them, not on the order screen.
  */
-router.patch("/:facilityId/menu/:itemId/availability", requireModule("pos"), requireAssignedFacility(), async (req, res, next) => {
-  try {
-    const item = await MenuItem.findOne({ _id: req.params.itemId, facility: req.facility._id });
-    if (!item) return res.status(404).json({ error: "That item is not on this facility's menu." });
-    if (typeof req.body.active !== "boolean") {
-      return res.status(400).json({ error: "Say whether the item is available or not." });
-    }
-    if (item.active === req.body.active) return res.json(itemJSON(item));
-
-    item.active = req.body.active;
-    item.updatedBy = req.user.id;
-    await item.save();
-
-    logAction(req, {
-      action: (item.active ? "Put " : "Marked ") + item.name +
-        (item.active ? " back on the menu at " : " unavailable at ") + req.facility.name,
-      entity: "MenuItem", entityId: item._id, location: req.facility.location,
-    });
-    res.json(itemJSON(item));
-  } catch (e) { next(e); }
-});
-
-/** PATCH /api/facilities/:facilityId/menu/:itemId  { name?, price?, category?, active? } */
 router.patch("/:facilityId/menu/:itemId", requireRole("manager", "owner"), requireAssignedFacility(), async (req, res, next) => {
   try {
     const item = await MenuItem.findOne({ _id: req.params.itemId, facility: req.facility._id });

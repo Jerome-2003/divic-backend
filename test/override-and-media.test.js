@@ -472,5 +472,52 @@ console.log("\n=== till ===");
 }
 
 
+// ---------- who may change a menu ----------
+console.log("\n=== the menu is a manager's to write ===");
+{
+  const { requireRole } = require("../middleware/auth");
+
+  const passes = (role) => {
+    let ok = false;
+    const res = { status() { return this; }, json() { return this; } };
+    requireRole("manager", "owner")({ user: { role } }, res, () => { ok = true; });
+    return ok;
+  };
+
+  check("a manager may write the menu", passes("manager"));
+  check("the owner may write the menu", passes("owner"));
+  check("bar staff may not write the menu", passes("facility") === false);
+  check("a receptionist may not write the menu", passes("receptionist") === false);
+  check("a cleaner may not write the menu", passes("cleaner") === false);
+
+  // The guard above is only worth anything if it is actually on the routes.
+  // Checked against the source because that is precisely the invariant: every
+  // write to a menu goes through the manager gate, and reading does not.
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "../routes/facilityOps.routes.js"), "utf8");
+
+  const menuRoutes = src.split("\n")
+    .filter((l) => /^router\.(get|post|patch|delete|put)\(/.test(l) && l.includes("/menu"));
+
+  check("there are menu routes to check", menuRoutes.length >= 3);
+
+  const writes = menuRoutes.filter((l) => !l.startsWith("router.get("));
+  check("every menu write is manager and owner only",
+    writes.length > 0 && writes.every((l) => l.includes('requireRole("manager", "owner")')));
+  check("...and none of them is open on the pos module alone",
+    writes.every((l) => !l.includes('requireModule("pos")')));
+  check("reading the menu stays open to whoever works the till",
+    menuRoutes.some((l) => l.startsWith("router.get(") && l.includes('requireModule("pos")')));
+
+  // Selling from the menu is the one thing everyone at the till can do, and
+  // must not have been caught by the tightening.
+  const lineRoute = src.split("\n").find((l) =>
+    l.startsWith("router.post(") && l.includes("/tabs/:tabId/lines"));
+  check("adding an item to a table is still open to bar staff",
+    Boolean(lineRoute) && lineRoute.includes('requireModule("pos")') &&
+    !lineRoute.includes('requireRole("manager", "owner")'));
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);
