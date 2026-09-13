@@ -13,6 +13,11 @@ const facilitySchema = new mongoose.Schema(
     // shown a till, and the server refuses a charge from one either way.
     sellsItems: { type: Boolean, default: false },
 
+    // What one person pays to use a pool or gym. Charged to everyone — an
+    // in-house guest puts it on their room, a walk-in pays at the desk. Stays 0
+    // for bars and the restaurant, which sell from a menu instead.
+    entryFee: { type: Number, default: 0, min: 0 },
+
     status: { type: String, enum: FACILITY_STATUSES, default: "open" },
     statusNote: { type: String, trim: true },                // "Pump being serviced, back Friday"
     openingHours: { type: String, trim: true },              // "6am – 10pm"

@@ -73,6 +73,9 @@ app.use("/api/requests", require("./routes/requests.routes"));
 app.use("/api/guests", require("./routes/guests.routes"));
 app.use("/api/payments", require("./routes/payments.routes"));
 app.use("/api/facilities", require("./routes/facilities.routes"));
+// Same prefix, consulted after it: facilities.routes owns what a facility is,
+// facilityOps.routes owns what happens inside one during a shift.
+app.use("/api/facilities", require("./routes/facilityOps.routes"));
 app.use("/api/staff", require("./routes/staff.routes"));
 app.use("/api/analytics", require("./routes/analytics.routes"));
 app.use("/api/audit", require("./routes/audit.routes"));
