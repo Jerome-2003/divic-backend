@@ -5,6 +5,8 @@ const Payment = require("../models/Payment");
 const Charge = require("../models/Charge");
 const Facility = require("../models/Facility");
 const { requireAuth, requireRole, scopeLocation } = require("../middleware/auth");
+const { LOCATIONS } = require("../utils/constants");
+const { windowFor, nightsIn, combine, MONTHS } = require("../services/report");
 
 // Revenue and analytics are manager and owner only. Receptionists never see them.
 router.use(requireAuth, requireRole("manager", "owner"));
@@ -24,9 +26,14 @@ const shift = (iso, n) => {
  * room — and mixing bar takings into them makes the numbers meaningless and
  * uncomparable to anything outside this hotel.
  */
-async function facilityRevenue(location, from) {
+async function facilityRevenue(location, from, to) {
+  const when = { $gte: new Date(from + "T00:00:00.000Z") };
+  // `to` is exclusive and given as a date, so a month's report stops at the
+  // first instant of the next month rather than at midnight on its last day —
+  // which would silently drop everything sold on the last day of the month.
+  if (to) when.$lt = new Date(to + "T00:00:00.000Z");
   const rows = await Charge.aggregate([
-    { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
+    { $match: { location, voided: false, createdAt: when } },
     { $group: {
         _id: { facility: "$facility", settlement: "$settlement" },
         total: { $sum: "$amount" }, count: { $sum: 1 },
@@ -220,6 +227,157 @@ router.get("/compare", async (req, res, next) => {
       };
     }
     res.json({ period: { from, to: today(), days }, properties: out });
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ *
+ *  THE RECORD — a month or a year, across the business                *
+ * ------------------------------------------------------------------ */
+
+/**
+ * GET /api/analytics/report?period=month&month=2026-09
+ * GET /api/analytics/report?period=year&year=2026
+ *
+ * The figures an owner closes a month or a year on, for both properties at
+ * once and for each on its own.
+ *
+ * Everything else in this file is a live view of the last N days — useful for
+ * running the hotel, useless for saying what September was. This is the other
+ * thing: a fixed window that will read the same in March as it does today, so
+ * a printed report can be filed and later relied on.
+ *
+ * Two revenue figures are reported side by side and they are not the same
+ * number. What was CHARGED comes from bookings and tells you what the month
+ * sold; what was COLLECTED comes from payments and tells you what actually
+ * arrived. A guest who books in September and pays in October puts them out of
+ * step, which is correct and worth stating on the page rather than reconciling
+ * away.
+ */
+
+async function reportFor(location, win) {
+  const sellableRooms = await Room.countDocuments({ location });
+  const days = nightsIn(win.from, win.to);
+
+  // Counted by arrival, the same basis /summary uses, so the two pages can be
+  // read together without one quietly meaning something else.
+  const bookings = await Booking.find({
+    location, status: { $ne: "cancelled" },
+    checkIn: { $gte: win.from, $lt: win.to },
+  }).lean();
+
+  const roomNights = bookings.reduce((s, b) => s + b.nights, 0);
+  const charged = bookings.reduce((s, b) => s + b.totalCharge, 0);
+  const discounted = bookings.reduce((s, b) => s + (b.discountTotal || 0), 0);
+  const available = sellableRooms * days;
+
+  const byRoomType = {};
+  const bySource = {};
+  bookings.forEach((b) => {
+    const t = (byRoomType[b.roomType] = byRoomType[b.roomType] || { bookings: 0, nights: 0, revenue: 0 });
+    t.bookings++; t.nights += b.nights; t.revenue += b.totalCharge;
+    bySource[b.source] = (bySource[b.source] || 0) + 1;
+  });
+
+  const payments = await Payment.aggregate([
+    { $match: {
+        location, voided: false,
+        createdAt: { $gte: new Date(win.from + "T00:00:00.000Z"), $lt: new Date(win.to + "T00:00:00.000Z") },
+    } },
+    { $group: {
+        _id: "$method",
+        total: { $sum: { $ifNull: ["$netAmount", "$amount"] } },
+        fees: { $sum: { $ifNull: ["$feeAmount", 0] } },
+        count: { $sum: 1 },
+    } },
+  ]);
+
+  const facilities = await facilityRevenue(location, win.from, win.to);
+
+  return {
+    id: location,
+    name: LOCATIONS[location].name,
+    rooms: {
+      sellable: sellableRooms,
+      bookings: bookings.length,
+      nightsSold: roomNights,
+      nightsAvailable: available,
+      occupancyPercent: available ? Math.round((roomNights / available) * 100) : 0,
+      // Room revenue only, always. Folding the bar into ADR or RevPAR would
+      // make them unreadable against any benchmark, including this hotel's own
+      // last year.
+      averageDailyRate: roomNights ? Math.round(charged / roomNights) : 0,
+      revPAR: available ? Math.round(charged / available) : 0,
+      revenue: charged,
+      discountsGiven: discounted,
+      byRoomType, bySource,
+    },
+    facilities,
+    collected: {
+      byMethod: Object.fromEntries(payments.map((p) => [p._id, p.total])),
+      payments: payments.reduce((s, p) => s + p.count, 0),
+      cardFees: payments.reduce((s, p) => s + (p.fees || 0), 0),
+      total: payments.reduce((s, p) => s + p.total, 0),
+    },
+    revenue: { rooms: charged, facilities: facilities.total, total: charged + facilities.total },
+  };
+}
+
+router.get("/report", async (req, res, next) => {
+  try {
+    const win = windowFor(req.query);
+    if (!win) {
+      return res.status(400).json({
+        error: "Ask for a month as period=month&month=2026-09, or a year as period=year&year=2026.",
+      });
+    }
+    if (win.from > today()) {
+      return res.status(400).json({ error: "That " + win.kind + " has not started yet." });
+    }
+
+    // A manager sees their own property; only somebody over both gets the
+    // collective figure, because for anyone else it is not their business.
+    const mine = req.user.location === "all"
+      ? ["exclusive", "urban"]
+      : [req.user.location];
+
+    const properties = [];
+    for (const location of mine) properties.push(await reportFor(location, win));
+
+    // A year is also worth reading month by month — that is where a season
+    // shows up, and a single annual total hides it completely.
+    let months = null;
+    if (win.kind === "year") {
+      months = [];
+      for (let m = 1; m <= 12; m++) {
+        const label = win.label + "-" + String(m).padStart(2, "0");
+        const sub = windowFor({ period: "month", month: label });
+        if (sub.from > today()) break;
+        const rows = [];
+        for (const location of mine) rows.push(await reportFor(location, sub));
+        const all = combine(rows);
+        months.push({
+          month: label, label: MONTHS[m - 1],
+          roomRevenue: all.revenue.rooms,
+          facilityRevenue: all.revenue.facilities,
+          total: all.revenue.total,
+          nightsSold: all.rooms.nightsSold,
+          occupancyPercent: all.rooms.occupancyPercent,
+        });
+      }
+    }
+
+    res.json({
+      period: win,
+      currency: "NGN",
+      // True when this is the whole business rather than one branch — the
+      // report says which on its face, so a printed page is never ambiguous
+      // about what it covers.
+      collective: mine.length > 1,
+      generatedAt: new Date().toISOString(),
+      properties,
+      totals: combine(properties),
+      months,
+    });
   } catch (e) { next(e); }
 });
 

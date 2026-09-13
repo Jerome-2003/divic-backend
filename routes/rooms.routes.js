@@ -2,10 +2,12 @@ const router = require("express").Router();
 const Room = require("../models/Room");
 const Booking = require("../models/Booking");
 const Rate = require("../models/Rate");
+const Discount = require("../models/Discount");
 const { requireAuth, requireModule, requireRole, scopeLocation } = require("../middleware/auth");
 const { findAvailableRooms, validRange } = require("../services/availability");
 const { logAction } = require("../services/audit");
 const { ROOM_STATUSES, LOCATIONS } = require("../utils/constants");
+const { publicDiscount } = require("../services/pricing");
 
 router.use(requireAuth);
 
@@ -126,6 +128,108 @@ router.put("/rates", requireRole("manager", "owner"), scopeLocation, async (req,
       before: before ? Object.fromEntries(Object.entries(before.prices)) : null, after: prices,
     });
     res.json({ location: req.location, prices: Object.fromEntries(Object.entries(doc.prices)) });
+  } catch (e) { next(e); }
+});
+
+/* ---------------- discounts ---------------- */
+
+/**
+ * Offers against the published rates. They sit next to rates rather than
+ * inside them because that is what they are to everyone who deals with them: a
+ * separate thing a manager turns on and off, shown to guests in its own right,
+ * that happens to come off the price at the moment of booking.
+ */
+
+const isDate = (v) => v === undefined || v === null || v === "" || /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+function badDiscount(body, location) {
+  if (!["percent", "fixed"].includes(body.kind)) {
+    return "Say whether this is a percentage off or an amount off.";
+  }
+  const value = Number(body.value);
+  if (!Number.isFinite(value) || value <= 0) return "The discount must be more than zero.";
+  if (body.kind === "percent" && value > 90) {
+    return "A percentage discount cannot be more than 90%.";
+  }
+  if (!String(body.name || "").trim()) return "Give the offer a name guests will read.";
+  if (!isDate(body.startsOn) || !isDate(body.endsOn)) return "Dates must be given as YYYY-MM-DD.";
+  if (body.startsOn && body.endsOn && body.endsOn < body.startsOn) {
+    return "The offer cannot end before it starts.";
+  }
+  for (const t of body.roomTypes || []) {
+    if (!LOCATIONS[location].typeOrder.includes(t)) {
+      return t + " is not a room type at this property.";
+    }
+  }
+  const min = Number(body.minNights ?? 1);
+  if (!Number.isInteger(min) || min < 1) return "The minimum stay must be at least one night.";
+  return null;
+}
+
+const fields = (body) => ({
+  name: String(body.name).trim().slice(0, 80),
+  blurb: String(body.blurb || "").trim().slice(0, 240) || undefined,
+  kind: body.kind,
+  value: Number(body.value),
+  roomTypes: body.roomTypes || [],
+  minNights: Number(body.minNights ?? 1),
+  startsOn: body.startsOn || undefined,
+  endsOn: body.endsOn || undefined,
+  active: !!body.active,
+});
+
+router.get("/discounts", requireModule("rates"), scopeLocation, async (req, res, next) => {
+  try {
+    const rows = await Discount.find({ location: req.location }).sort({ active: -1, createdAt: -1 }).lean();
+    res.json(rows.map((d) => ({ ...publicDiscount(d), active: d.active, updatedAt: d.updatedAt })));
+  } catch (e) { next(e); }
+});
+
+router.post("/discounts", requireRole("manager", "owner"), scopeLocation, async (req, res, next) => {
+  try {
+    const bad = badDiscount(req.body || {}, req.location);
+    if (bad) return res.status(400).json({ error: bad });
+    const doc = await Discount.create({
+      ...fields(req.body), location: req.location, createdBy: req.user.id,
+    });
+    logAction(req, {
+      action: "Created the offer " + doc.name + " at " + LOCATIONS[req.location].name,
+      entity: "Discount", entityId: doc._id, location: req.location, after: doc.toObject(),
+    });
+    res.status(201).json({ ...publicDiscount(doc), active: doc.active });
+  } catch (e) { next(e); }
+});
+
+router.patch("/discounts/:id", requireRole("manager", "owner"), scopeLocation, async (req, res, next) => {
+  try {
+    const doc = await Discount.findOne({ _id: req.params.id, location: req.location });
+    if (!doc) return res.status(404).json({ error: "That offer was not found." });
+
+    // Turning one on or off is the everyday action and needs nothing else sent.
+    const merged = { ...doc.toObject(), ...req.body };
+    const bad = badDiscount(merged, req.location);
+    if (bad) return res.status(400).json({ error: bad });
+
+    const before = doc.toObject();
+    Object.assign(doc, fields(merged), { updatedBy: req.user.id });
+    await doc.save();
+    logAction(req, {
+      action: (before.active === doc.active ? "Edited the offer " : doc.active ? "Turned on the offer " : "Turned off the offer ") + doc.name,
+      entity: "Discount", entityId: doc._id, location: req.location, before, after: doc.toObject(),
+    });
+    res.json({ ...publicDiscount(doc), active: doc.active });
+  } catch (e) { next(e); }
+});
+
+router.delete("/discounts/:id", requireRole("manager", "owner"), scopeLocation, async (req, res, next) => {
+  try {
+    const doc = await Discount.findOneAndDelete({ _id: req.params.id, location: req.location });
+    if (!doc) return res.status(404).json({ error: "That offer was not found." });
+    logAction(req, {
+      action: "Deleted the offer " + doc.name,
+      entity: "Discount", entityId: doc._id, location: req.location, before: doc.toObject(),
+    });
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 

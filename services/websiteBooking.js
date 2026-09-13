@@ -78,7 +78,13 @@ async function settlePaidRequest(app, requestDoc, verification) {
         checkOut: requestDoc.checkOut,
         nights: requestDoc.nights,
         rate: requestDoc.quotedRate,
+        // The figures the guest was quoted, carried through untouched. Offers
+        // are never re-run here: the price was agreed when they booked, and an
+        // offer ending between then and their arrival must not change it.
         totalCharge: requestDoc.quotedTotal,
+        grossCharge: requestDoc.quotedGross ?? requestDoc.quotedTotal,
+        discountTotal: (requestDoc.quotedGross ?? requestDoc.quotedTotal) - requestDoc.quotedTotal,
+        discounts: requestDoc.discounts || [],
         adults: requestDoc.adults,
         children: requestDoc.children,
         status: "confirmed",

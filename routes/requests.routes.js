@@ -59,7 +59,13 @@ router.post("/:id/accept", async (req, res, next) => {
       location: reqDoc.location, guest: guest._id,
       room: room._id, roomNumber: room.number, roomType: reqDoc.roomType,
       checkIn: reqDoc.checkIn, checkOut: reqDoc.checkOut, nights: reqDoc.nights,
+      // Priced when the guest asked, not when the desk got round to it: an
+      // offer that has since ended must not raise the bill of someone who
+      // booked while it was running.
       rate: reqDoc.quotedRate, totalCharge: reqDoc.quotedTotal,
+      grossCharge: reqDoc.quotedGross ?? reqDoc.quotedTotal,
+      discountTotal: (reqDoc.quotedGross ?? reqDoc.quotedTotal) - reqDoc.quotedTotal,
+      discounts: reqDoc.discounts || [],
       adults: reqDoc.adults, children: reqDoc.children,
       source: "website", specialRequests: reqDoc.specialRequests,
       createdBy: req.user.id, fromRequest: reqDoc._id,

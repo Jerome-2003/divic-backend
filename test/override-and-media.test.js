@@ -173,5 +173,148 @@ console.log("\n=== Cloudinary upload signature ===");
 }
 
 
+// ---------- discount arithmetic ----------
+console.log("\n=== discounts ===");
+{
+  const { priceStay, applies } = require("../services/pricing");
+  const on = (d) => ({ active: true, minNights: 1, roomTypes: [], ...d });
+  const stay = { rate: 50000, nights: 4, roomType: "deluxe", checkIn: "2026-12-10" };
+
+  check("no offers leaves the price alone",
+    priceStay({ ...stay, discounts: [] }).total === 200000);
+
+  const pct = priceStay({ ...stay, discounts: [on({ name: "December", kind: "percent", value: 15 })] });
+  check("a percentage comes off the whole stay", pct.total === 170000 && pct.discountTotal === 30000);
+  check("the gross is kept so a bill can explain itself", pct.gross === 200000);
+
+  const fixed = priceStay({ ...stay, discounts: [on({ name: "Long stay", kind: "fixed", value: 20000 })] });
+  check("a flat amount comes off the stay, not each night", fixed.total === 180000);
+
+  // Both at once — the thing the manager was promised when they were told
+  // offers are "calculated together".
+  const both = priceStay({ ...stay, discounts: [
+    on({ name: "December", kind: "percent", value: 15 }),
+    on({ name: "Long stay", kind: "fixed", value: 20000 }),
+  ] });
+  check("offers stack", both.total === 150000);
+  check("percentage is taken before the flat amount", both.discounts[0].amount === 30000);
+  check("each offer is credited with what it took off",
+    both.discounts.reduce((a, d) => a + d.amount, 0) === both.discountTotal);
+
+  // Two percentages must total their sum, not compound, or the website's
+  // headline and the bill disagree.
+  const two = priceStay({ ...stay, discounts: [
+    on({ name: "A", kind: "percent", value: 10 }),
+    on({ name: "B", kind: "percent", value: 10 }),
+  ] });
+  check("two percentages add rather than compound", two.discountTotal === 40000);
+  check("...and their credited shares still add up to it",
+    two.discounts.reduce((a, d) => a + d.amount, 0) === 40000);
+
+  check("a percentage is capped short of free",
+    priceStay({ ...stay, discounts: [on({ name: "Absurd", kind: "percent", value: 400 })] }).total === 20000);
+  check("a flat amount can never make the bill negative",
+    priceStay({ ...stay, discounts: [on({ name: "Absurd", kind: "fixed", value: 900000 })] }).total === 0);
+
+  // Applicability.
+  check("an inactive offer is ignored",
+    priceStay({ ...stay, discounts: [{ active: false, name: "Off", kind: "percent", value: 50 }] }).total === 200000);
+  check("an offer for other room types is ignored",
+    priceStay({ ...stay, discounts: [on({ name: "Suites", kind: "percent", value: 50, roomTypes: ["superior"] })] }).total === 200000);
+  check("an offer for this room type applies",
+    priceStay({ ...stay, discounts: [on({ name: "Deluxe", kind: "percent", value: 50, roomTypes: ["deluxe"] })] }).total === 100000);
+  check("a stay too short for the offer is ignored",
+    priceStay({ ...stay, nights: 2, discounts: [on({ name: "Week", kind: "percent", value: 50, minNights: 7 })] }).total === 100000);
+
+  // Judged on arrival date, which is the rule a receptionist can explain.
+  const december = on({ name: "Dec", kind: "percent", value: 20, startsOn: "2026-12-01", endsOn: "2026-12-31" });
+  check("an offer applies to an arrival inside its window",
+    applies(december, { roomType: "deluxe", checkIn: "2026-12-10", nights: 4 }) === true);
+  check("an arrival before the window misses it",
+    applies(december, { roomType: "deluxe", checkIn: "2026-11-30", nights: 4 }) === false);
+  check("an arrival after the window misses it",
+    applies(december, { roomType: "deluxe", checkIn: "2027-01-02", nights: 4 }) === false);
+}
+
+
+// ---------- report periods and combining ----------
+console.log("\n=== month and year windows ===");
+{
+  const { windowFor, nightsIn, combine } = require("../services/report");
+
+  const sep = windowFor({ period: "month", month: "2026-09" });
+  check("a month runs to the first of the next", sep.from === "2026-09-01" && sep.to === "2026-10-01");
+  // A window that ends a day early drops the busiest day of the month and
+  // nothing on the printed page would look wrong.
+  check("a 30-day month counts 30 nights", nightsIn(sep.from, sep.to) === 30);
+  check("a month is named the way a person would", sep.label === "September 2026");
+
+  const dec = windowFor({ period: "month", month: "2026-12" });
+  check("December rolls into the next year", dec.to === "2027-01-01");
+  check("...and still counts 31 nights", nightsIn(dec.from, dec.to) === 31);
+
+  const feb = windowFor({ period: "month", month: "2028-02" });
+  check("February in a leap year counts 29 nights", nightsIn(feb.from, feb.to) === 29);
+
+  const yr = windowFor({ period: "year", year: "2026" });
+  check("a year runs January to January", yr.from === "2026-01-01" && yr.to === "2027-01-01");
+  check("a year counts 365 nights", nightsIn(yr.from, yr.to) === 365);
+  const leap = windowFor({ period: "year", year: "2028" });
+  check("a leap year counts 366", nightsIn(leap.from, leap.to) === 366);
+
+  check("a month of 13 is refused", windowFor({ period: "month", month: "2026-13" }) === null);
+  check("a month of 00 is refused", windowFor({ period: "month", month: "2026-00" }) === null);
+  check("nonsense is refused", windowFor({ period: "month", month: "September" }) === null);
+  check("a year outside living memory is refused", windowFor({ period: "year", year: "1066" }) === null);
+
+  // Two properties of different sizes, which is the case the obvious
+  // implementation gets wrong.
+  const branch = (o) => ({
+    id: o.id, name: o.name,
+    rooms: {
+      sellable: o.sellable, bookings: o.bookings, nightsSold: o.nightsSold,
+      nightsAvailable: o.nightsAvailable, occupancyPercent: 0,
+      averageDailyRate: Math.round(o.revenue / o.nightsSold), revPAR: 0,
+      revenue: o.revenue, discountsGiven: o.discounts || 0,
+      byRoomType: o.byRoomType || {}, bySource: o.bySource || {},
+    },
+    facilities: { total: o.facilities, chargedToRooms: o.facilities, paidAtTill: 0, byFacility: o.byFacility || [] },
+    collected: { byMethod: o.byMethod || {}, payments: o.payments || 0, cardFees: o.cardFees || 0, total: o.collected || 0 },
+    revenue: { rooms: o.revenue, facilities: o.facilities, total: o.revenue + o.facilities },
+  });
+
+  const small = branch({ id: "exclusive", name: "Divic Exclusive", sellable: 15,
+    bookings: 10, nightsSold: 100, nightsAvailable: 450, revenue: 5000000, facilities: 400000,
+    byRoomType: { deluxe: { bookings: 10, nights: 100, revenue: 5000000 } },
+    bySource: { "walk-in": 6, website: 4 }, byMethod: { cash: 1000000 }, collected: 1000000, payments: 5 });
+  const big = branch({ id: "urban", name: "Divic Urban", sellable: 21,
+    bookings: 30, nightsSold: 400, nightsAvailable: 630, revenue: 12000000, facilities: 900000,
+    byRoomType: { deluxe: { bookings: 30, nights: 400, revenue: 12000000 } },
+    bySource: { website: 30 }, byMethod: { cash: 500000, transfer: 2000000 }, collected: 2500000, payments: 20 });
+
+  const all = combine([small, big]);
+  check("room revenue adds across properties", all.revenue.rooms === 17000000);
+  check("facility revenue adds across properties", all.revenue.facilities === 1300000);
+  check("the business total is both together", all.revenue.total === 18300000);
+  check("nights sold add", all.rooms.nightsSold === 500);
+  check("occupancy is worked out from combined nights", all.rooms.occupancyPercent === Math.round((500 / 1080) * 100));
+  // Averaging the two branch rates gives 40,000 — true of neither property and
+  // of the business least of all.
+  check("the average rate is recomputed, not averaged between branches",
+    all.rooms.averageDailyRate === Math.round(17000000 / 500));
+  check("...which is not the average of the two branch rates",
+    all.rooms.averageDailyRate !== Math.round((small.rooms.averageDailyRate + big.rooms.averageDailyRate) / 2));
+  check("room types merge across properties",
+    all.rooms.byRoomType.deluxe.nights === 500 && all.rooms.byRoomType.deluxe.revenue === 17000000);
+  check("booking sources merge", all.rooms.bySource.website === 34 && all.rooms.bySource["walk-in"] === 6);
+  check("payment methods merge", all.collected.byMethod.cash === 1500000 && all.collected.byMethod.transfer === 2000000);
+  check("collected totals add", all.collected.total === 3500000 && all.collected.payments === 25);
+
+  const alone = combine([small]);
+  check("one property on its own reports itself unchanged",
+    alone.revenue.total === small.revenue.total && alone.rooms.averageDailyRate === small.rooms.averageDailyRate);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);
