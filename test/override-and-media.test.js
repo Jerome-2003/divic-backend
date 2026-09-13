@@ -316,5 +316,49 @@ console.log("\n=== month and year windows ===");
 }
 
 
+// ---------- what appears on a front desk bill ----------
+console.log("\n=== signed to the room ===");
+{
+  const { shapeBreakdown } = require("../services/folio");
+
+  const row = (booking, facility, amount, items = 1) =>
+    ({ _id: { booking, facility }, amount, items });
+
+  const facilities = [
+    { _id: "bar1", name: "Rooftop Bar", type: "bar" },
+    { _id: "pool1", name: "Pool", type: "pool" },
+    { _id: "gym1", name: "Gym", type: "gym" },
+  ];
+
+  const out = shapeBreakdown([
+    row("bk1", "pool1", 6000),
+    row("bk1", "bar1", 18000, 7),
+    row("bk2", "gym1", 40000),
+  ], facilities);
+
+  check("each booking gets only its own charges",
+    out.bk1.length === 2 && out.bk2.length === 1);
+  // The whole point: the pool's money must not appear under the bar's name.
+  check("facilities are named, not lumped under one",
+    out.bk1.map((l) => l.name).sort().join("|") === "Pool|Rooftop Bar");
+  check("the largest line is first, since that is the one being queried",
+    out.bk1[0].name === "Rooftop Bar" && out.bk1[0].amount === 18000);
+  check("the facility's type comes through for the bill", out.bk1[1].type === "pool");
+  check("how many items made up the line is kept", out.bk1[0].items === 7);
+  check("the lines add up to what the folio says is owed",
+    out.bk1.reduce((a, l) => a + l.amount, 0) === 24000);
+
+  // A facility deleted after a guest signed for something there.
+  const orphan = shapeBreakdown([row("bk3", "gone", 5000)], facilities);
+  check("a deleted facility does not drop the charge off the bill",
+    orphan.bk3.length === 1 && orphan.bk3[0].amount === 5000);
+  check("...and it is named plainly rather than left blank",
+    orphan.bk3[0].name === "A facility");
+
+  check("a guest who signed for nothing has no lines at all",
+    shapeBreakdown([], facilities).bk1 === undefined);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);

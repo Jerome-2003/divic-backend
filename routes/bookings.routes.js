@@ -55,6 +55,7 @@ router.get("/", scopeLocation, async (req, res, next) => {
         ...b,
         roomCharges: f.roomCharges,
         facilityCharges: f.facilityCharges,
+        facilityBreakdown: f.facilityBreakdown,
         totalCharges: f.totalCharges,
         paid: f.paid,
         balance: f.balance,
@@ -256,6 +257,10 @@ router.post("/:id/check-out", requireOperational("receptionist"), async (req, re
         balance,
         roomCharges: folio.roomCharges,
         facilityCharges: folio.facilityCharges,
+        // Named on the refusal too: a receptionist deciding whether to override
+        // a checkout needs to know a ₦40,000 balance is the gym and not the
+        // room, because those are two different conversations to have.
+        facilityBreakdown: folio.facilityBreakdown,
         paid: folio.paid,
         hint: "Take the payment first, or send allowUnpaid to check out with the balance owing.",
       });
