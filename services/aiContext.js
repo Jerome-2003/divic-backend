@@ -19,6 +19,15 @@ const FaqEntry = require("../models/FaqEntry");
 const SiteContent = require("../models/SiteContent");
 const Notification = require("../models/Notification");
 const Rate = require("../models/Rate");
+const Discount = require("../models/Discount");
+const MenuItem = require("../models/MenuItem");
+const Tab = require("../models/Tab");
+const FacilityVisit = require("../models/FacilityVisit");
+const Membership = require("../models/Membership");
+const ShiftModel = require("../models/Shift");
+const ShiftTimes = require("../models/ShiftTimes");
+const { onRosterAt, windowsFor, DEFAULT_TIMES } = require("./roster");
+const { priceStay, liveDiscounts, publicDiscount } = require("./pricing");
 const { LOCATIONS } = require("../utils/constants");
 const { findAvailableRooms, nightsBetween } = require("./availability");
 const { foliosFor } = require("./folio");
@@ -30,6 +39,27 @@ const { today, dayStart, shiftDays: shift } = require("../utils/day");
 async function ratesFor(location) {
   const doc = await Rate.findOne({ location }).lean();
   return doc ? Object.fromEntries(Object.entries(doc.prices)) : LOCATIONS[location].rates;
+}
+
+/**
+ * The published rate is no longer what a guest pays.
+ *
+ * Offers came along after this file and it kept answering with the rate card,
+ * which is not a gap but a wrong answer: asked "what does a deluxe cost", the
+ * assistant would quote a figure nobody is charged while an offer is running.
+ * Every rate answer now carries the offers with it.
+ */
+async function offersFor(location) {
+  const rows = await liveDiscounts(location);
+  return rows.map((d) => {
+    const p = publicDiscount(d);
+    return {
+      name: p.name, takesOff: p.label, kind: p.kind, value: p.value,
+      roomTypes: p.roomTypes.length ? p.roomTypes : "every room type",
+      minimumNights: p.minNights,
+      arrivalsFrom: p.startsOn, arrivalsUntil: p.endsOn,
+    };
+  });
 }
 
 /* ---------------------------------------------------------------- */
@@ -452,7 +482,33 @@ async function availableRoomsNow(location) {
   return { property: LOCATIONS[location].name, count: rooms.length, rooms: rooms.map(r => ({ number: r.number, type: r.type, floor: r.floor })) };
 }
 
-async function currentRates(location) { return { property: LOCATIONS[location].name, rates: await ratesFor(location) }; }
+async function currentRates(location) {
+  const [rates, offers] = await Promise.all([ratesFor(location), offersFor(location)]);
+  return {
+    property: LOCATIONS[location].name,
+    rates,
+    offersRunning: offers,
+    note: offers.length
+      ? "These are the published rates. The offers listed come off them automatically when a guest books, online and at the desk, so a guest whose stay qualifies pays less than the rate shown."
+      : "No offers are running, so these are what a guest pays.",
+  };
+}
+
+/** What a stay actually costs, offers included — the question people ask. */
+async function quoteStay(location, roomType, checkIn, nights = 1) {
+  const rates = await ratesFor(location);
+  const rate = rates[roomType];
+  if (!Number.isFinite(rate)) return { error: roomType + " is not a room type at " + LOCATIONS[location].name };
+  const priced = priceStay({
+    rate, nights, roomType, checkIn: checkIn || today(),
+    discounts: await liveDiscounts(location),
+  });
+  return {
+    property: LOCATIONS[location].name, roomType, nights,
+    nightlyRate: rate, beforeOffers: priced.gross,
+    offersApplied: priced.discounts, saving: priced.discountTotal, guestPays: priced.total,
+  };
+}
 
 async function facilityStatus(location) {
   const facilities = await Facility.find({ location }).sort({ type: 1, name: 1 }).lean();
@@ -505,6 +561,140 @@ async function notifications(location, userId) {
     notifications: rows.map(n => ({ title: n.title, body: n.body || "", urgent: !!n.urgent, type: n.type, createdAt: n.createdAt })) };
 }
 
+
+/* ---------------------------------------------------------------- *
+ *  What the facilities are actually doing
+ *
+ *  The assistant could see facility revenue as a lump of Charges from the day
+ *  the tills existed, and nothing else: not what a bar sells, not what is open
+ *  on its floor right now, not who is in the pool, not who holds a gym
+ *  membership. "How was the bar tonight" could be answered with a number and
+ *  not one word about what was actually sold.
+ * ---------------------------------------------------------------- */
+
+/** What each bar and restaurant sells, and for how much. */
+async function barMenus(location) {
+  const facilities = await Facility.find({ location, type: { $in: ["bar", "restaurant"] } })
+    .select("name type status").lean();
+  const items = await MenuItem.find({ location }).select("facility name category price active").lean();
+  return {
+    property: LOCATIONS[location].name,
+    facilities: facilities.map((f) => ({
+      name: f.name, type: f.type, status: f.status,
+      menu: items.filter((i) => String(i.facility) === String(f._id))
+        .map((i) => ({ item: i.name, category: i.category, price: i.price, available: !!i.active })),
+    })),
+  };
+}
+
+/** Tables open now, and what settled today. */
+async function barFloor(location) {
+  const facilities = await Facility.find({ location, type: { $in: ["bar", "restaurant"] } })
+    .select("name").lean();
+  const ids = facilities.map((f) => f._id);
+  const nameBy = Object.fromEntries(facilities.map((f) => [String(f._id), f.name]));
+
+  const [open, settled] = await Promise.all([
+    Tab.find({ facility: { $in: ids }, status: "open" }).populate("openedBy", "name").lean(),
+    Tab.find({
+      facility: { $in: ids }, status: "settled", voided: { $ne: true },
+      settledAt: { $gte: dayStart(today()) },
+    }).populate("settledBy", "name").lean(),
+  ]);
+
+  const sold = {};
+  settled.forEach((t) => (t.lines || []).forEach((l) => {
+    sold[l.name] = (sold[l.name] || 0) + l.qty;
+  }));
+
+  return {
+    property: LOCATIONS[location].name,
+    openTables: open.map((t) => ({
+      facility: nameBy[String(t.facility)], table: t.tableName,
+      room: t.roomNumber || null, guest: t.guestSurname || t.guestName || null,
+      items: (t.lines || []).length,
+      worth: (t.lines || []).reduce((a, l) => a + l.unitPrice * l.qty, 0),
+      openedBy: t.openedBy?.name || null, openedAt: t.createdAt,
+    })),
+    settledToday: settled.length,
+    takenToday: settled.reduce((a, t) => a + (t.total || 0), 0),
+    sellingMost: Object.entries(sold).sort((a, b) => b[1] - a[1]).slice(0, 10)
+      .map(([item, qty]) => ({ item, qty })),
+  };
+}
+
+/** Who is in the pool or the gym today, and the gym's members. */
+async function facilityVisitors(location) {
+  const facilities = await Facility.find({ location, type: { $in: ["pool", "gym"] } })
+    .select("name type entryFee").lean();
+  const ids = facilities.map((f) => f._id);
+  const nameBy = Object.fromEntries(facilities.map((f) => [String(f._id), f]));
+
+  const [visits, members] = await Promise.all([
+    FacilityVisit.find({ facility: { $in: ids }, createdAt: { $gte: dayStart(today()) } }).lean(),
+    Membership.find({ facility: { $in: ids } }).sort({ endsOn: -1 }).limit(60).lean(),
+  ]);
+
+  const t = today();
+  return {
+    property: LOCATIONS[location].name,
+    facilities: facilities.map((f) => ({ name: f.name, type: f.type, entryFee: f.entryFee || 0 })),
+    visitsToday: visits.map((v) => ({
+      facility: nameBy[String(v.facility)]?.name, guest: v.guestName, people: v.people,
+      paid: v.settlement === "room" ? "charged to room" : "paid at the desk",
+      amount: v.amount, stillInside: !v.leftAt,
+    })),
+    takenFromVisitsToday: visits.reduce((a, v) => a + (v.amount || 0), 0),
+    gymMembers: members.map((m) => ({
+      facility: nameBy[String(m.facility)]?.name, member: m.memberName, plan: m.planName,
+      runs: m.startsOn + " to " + m.endsOn, paid: m.price,
+      current: m.startsOn <= t && m.endsOn >= t,
+    })),
+  };
+}
+
+/**
+ * Who is on shift, who should be, and who is signed on at four in the morning
+ * because they forgot to end it.
+ */
+async function shiftBoard(location) {
+  const users = await User.find(
+    location === "all" ? {} : { location: { $in: [location, "all"] } }
+  ).select("name role location shifts active").lean();
+
+  const [open, timesDoc] = await Promise.all([
+    ShiftModel.find({ user: { $in: users.map((u) => u._id) }, endedAt: { $exists: false } }).lean(),
+    ShiftTimes.findOne({ location: location === "all" ? "exclusive" : location }).lean(),
+  ]);
+  const times = timesDoc || DEFAULT_TIMES;
+  const openBy = Object.fromEntries(open.map((s) => [String(s.user), s]));
+  const w = windowsFor(times);
+  const now = new Date();
+
+  const people = users.filter((u) => u.active).map((u) => {
+    const shift = openBy[String(u._id)];
+    const roster = onRosterAt(u.shifts, times, now);
+    return {
+      name: u.name, role: u.role,
+      onShift: Boolean(shift),
+      onShiftFor: shift ? Math.round((now - new Date(shift.startedAt)) / 60000) + " minutes" : null,
+      dueOn: roster.on,
+      dueShift: roster.shift || null,
+    };
+  });
+
+  return {
+    property: LOCATIONS[location] ? LOCATIONS[location].name : "Both properties",
+    shiftTimes: { morning: w.morning.startsAt + "–" + w.morning.endsAt, night: w.night.startsAt + "–" + w.night.endsAt },
+    onShiftNow: people.filter((p) => p.onShift).map((p) => p.name),
+    dueOnNow: people.filter((p) => p.dueOn).map((p) => p.name),
+    // The two questions worth asking of this board.
+    dueButNotSignedIn: people.filter((p) => p.dueOn && !p.onShift).map((p) => p.name),
+    signedInButNotDue: people.filter((p) => p.onShift && !p.dueOn).map((p) => p.name),
+    people,
+  };
+}
+
 const BUILDERS = {
   operationsSnapshot, housekeepingSnapshot, outstandingBalances, revenueSummary,
   propertyComparison, pricingSignals, bookingSources, repeatGuests,
@@ -512,6 +702,8 @@ const BUILDERS = {
   arrivalsToday, departuresToday, inHouseGuests, todayOccupancy, bookingStatusesToday, guestStats,
   roomInventory, availableRoomsNow, currentRates, facilityStatus, requestSummary, publishedContent,
   faqKnowledge, staffOverview, recentAudit, notifications, upcomingBookings, roomStatusDetail, facilityRevenue,
+  // Everything the tills, the offers and the rosters brought with them.
+  barMenus, barFloor, facilityVisitors, shiftBoard,
 };
 
 async function buildContext(name, location, userId) {

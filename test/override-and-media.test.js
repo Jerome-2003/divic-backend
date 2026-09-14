@@ -641,5 +641,40 @@ console.log("\n=== who is meant to be on ===");
 }
 
 
+// ---------- the assistant keeping up ----------
+console.log("\n=== the assistant ===");
+{
+  const { BUILDERS } = require("../services/aiContext");
+  const { PREPARED_PROMPTS } = require("../services/aiPrompts");
+
+  // This is the drift that does not announce itself. A feature ships, nobody
+  // teaches the assistant about it, and it answers confidently from a world
+  // that no longer exists — which is worse than saying it does not know.
+  const missing = PREPARED_PROMPTS
+    .map((p) => String(p.context || "").split(":")[0])
+    .filter((k) => k && k !== "none" && !BUILDERS[k]);
+  check("every prompt points at a builder that exists", missing.length === 0,
+    missing.join(", "));
+
+  const reached = new Set(PREPARED_PROMPTS.map((p) => String(p.context || "").split(":")[0]));
+  const unreachable = Object.keys(BUILDERS).filter((k) => !reached.has(k));
+  check("every builder is reachable from some prompt", unreachable.length === 0,
+    unreachable.join(", "));
+
+  // Named explicitly, because these are the ones it was blind to and a silent
+  // regression here reads as the assistant simply being unhelpful.
+  ["barMenus", "barFloor", "facilityVisitors", "shiftBoard"].forEach((k) => {
+    check("it can see " + k, typeof BUILDERS[k] === "function");
+  });
+
+  const ids = PREPARED_PROMPTS.map((p) => p.id);
+  check("no two prompts share an id", new Set(ids).size === ids.length);
+  check("every prompt has a role list",
+    PREPARED_PROMPTS.every((p) => Array.isArray(p.roles) && p.roles.length));
+  check("every prompt says what to do with the context",
+    PREPARED_PROMPTS.every((p) => typeof p.instruction === "string" && p.instruction.length > 10));
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);
