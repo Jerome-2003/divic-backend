@@ -3,3 +3,7 @@ node_modules/
 .env.local
 *.log
 .DS_Store
+
+# A stray self-referential symlink got committed here once, from a script run
+# in a sibling directory. Named explicitly so it cannot happen twice.
+/divic-backend
