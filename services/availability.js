@@ -5,10 +5,11 @@ const HOLDING_STATUSES = ["confirmed", "in-house"];
 
 const overlaps = (aIn, aOut, bIn, bOut) => aIn < bOut && bIn < aOut;
 
-function nightsBetween(checkIn, checkOut) {
-  const ms = new Date(checkOut + "T00:00:00Z") - new Date(checkIn + "T00:00:00Z");
-  return Math.round(ms / 86400000);
-}
+// Shared rather than repeated: this sum had four private copies across the
+// codebase, which is four chances for one of them to drift.
+const { daysBetween } = require("../utils/day");
+
+const nightsBetween = (checkIn, checkOut) => daysBetween(checkIn, checkOut);
 
 function validRange(checkIn, checkOut) {
   const re = /^\d{4}-\d{2}-\d{2}$/;

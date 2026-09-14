@@ -13,7 +13,9 @@ const { LOCATIONS } = require("../utils/constants");
 
 router.use(requireAuth, requireModule("bookings"));
 
-const today = () => new Date().toISOString().slice(0, 10);
+// The hotel's day, not UTC's — arrivals and departures are calendar days
+// here, and a day computed in UTC starts an hour late.
+const { today, dayStart } = require("../utils/day");
 
 async function makeRef(location) {
   const prefix = location === "exclusive" ? "DX-" : "DU-";

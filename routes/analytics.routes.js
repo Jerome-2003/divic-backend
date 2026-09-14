@@ -4,6 +4,7 @@ const Room = require("../models/Room");
 const Payment = require("../models/Payment");
 const Charge = require("../models/Charge");
 const Facility = require("../models/Facility");
+const { foliosFor } = require("../services/folio");
 const { requireAuth, requireRole, scopeLocation } = require("../middleware/auth");
 const { LOCATIONS } = require("../utils/constants");
 const ReportExport = require("../models/ReportExport");
@@ -12,12 +13,10 @@ const { windowFor, nightsIn, combine, periodsDue, MONTHS } = require("../service
 // Revenue and analytics are manager and owner only. Receptionists never see them.
 router.use(requireAuth, requireRole("manager", "owner"));
 
-const today = () => new Date().toISOString().slice(0, 10);
-const shift = (iso, n) => {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
+// The hotel's day, not UTC's — see utils/day.js. Lagos is an hour ahead, so
+// a day computed in UTC rolls over at 1am and "today's sales" spends that hour
+// reporting yesterday's.
+const { today, dayStart, dayEnd, shiftDays: shift } = require("../utils/day");
 
 /**
  * Facility takings over a period, broken down by facility.
@@ -28,11 +27,11 @@ const shift = (iso, n) => {
  * uncomparable to anything outside this hotel.
  */
 async function facilityRevenue(location, from, to) {
-  const when = { $gte: new Date(from + "T00:00:00.000Z") };
+  const when = { $gte: dayStart(from) };
   // `to` is exclusive and given as a date, so a month's report stops at the
   // first instant of the next month rather than at midnight on its last day —
   // which would silently drop everything sold on the last day of the month.
-  if (to) when.$lt = new Date(to + "T00:00:00.000Z");
+  if (to) when.$lt = dayStart(to);
   const rows = await Charge.aggregate([
     { $match: { location, voided: false, createdAt: when } },
     { $group: {
@@ -173,7 +172,7 @@ router.get("/occupancy", scopeLocation, async (req, res, next) => {
  */
 router.get("/today", scopeLocation, async (req, res, next) => {
   try {
-    const start = new Date(today() + "T00:00:00.000Z");
+    const start = dayStart(today());
     const payments = await Payment.find({
       location: req.location, voided: false, createdAt: { $gte: start },
     }).populate("facility", "name").lean();
@@ -193,6 +192,31 @@ router.get("/today", scopeLocation, async (req, res, next) => {
       }
     });
 
+    /**
+     * What is still owed, which is the one figure on this endpoint that is not
+     * about today at all.
+     *
+     * A day's takings reset at midnight and should; a debt does not. Money owed
+     * by a guest who has already left is the more urgent of the two and used to
+     * vanish from the dashboard the moment they checked out — the only figure
+     * there counted guests staying tonight. It is read here rather than in the
+     * browser because the dashboard's booking list is capped, and a money
+     * figure that quietly understates itself is worse than no figure.
+     */
+    const open = await Booking.find({
+      location: req.location, status: { $in: ["confirmed", "in-house", "checked-out"] },
+    }).select("status totalCharge").limit(2000).lean();
+    const folios = await foliosFor(open);
+
+    let owedInHouse = 0;
+    let owedDeparted = 0;
+    open.forEach((b) => {
+      const balance = Math.max(0, folios[String(b._id)]?.balance || 0);
+      if (!balance) return;
+      if (b.status === "checked-out") owedDeparted += balance;
+      else owedInHouse += balance;
+    });
+
     res.json({
       date: today(),
       location: req.location,
@@ -202,6 +226,11 @@ router.get("/today", scopeLocation, async (req, res, next) => {
       facilitySalesByFacility,
       totalSalesToday: roomSalesToday + facilitySalesToday,
       paymentsCollectedToday: payments.length,
+      outstanding: {
+        inHouse: owedInHouse,
+        departed: owedDeparted,
+        total: owedInHouse + owedDeparted,
+      },
     });
   } catch (e) { next(e); }
 });
@@ -282,7 +311,7 @@ async function reportFor(location, win) {
   const payments = await Payment.aggregate([
     { $match: {
         location, voided: false,
-        createdAt: { $gte: new Date(win.from + "T00:00:00.000Z"), $lt: new Date(win.to + "T00:00:00.000Z") },
+        createdAt: { $gte: dayStart(win.from), $lt: dayStart(win.to) },
     } },
     { $group: {
         _id: "$method",

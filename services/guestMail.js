@@ -3,10 +3,17 @@ const { LOCATIONS } = require("../utils/constants");
 
 const money = (n) => "₦" + Number(n || 0).toLocaleString("en-NG");
 
-/** "2026-09-20" -> "Sunday, 20 September 2026" */
+/**
+ * "2026-09-20" -> "Sunday, 20 September 2026"
+ *
+ * Read and rendered in UTC, both. Without the Z this parsed as midnight in
+ * whatever zone the server happened to run in, and any server west of UTC
+ * would then render the day before — telling a guest their stay began on the
+ * 19th when the booking says the 20th.
+ */
 const longDate = (isoDate) =>
-  new Date(isoDate + "T00:00:00").toLocaleDateString("en-NG", {
-    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  new Date(isoDate + "T00:00:00Z").toLocaleDateString("en-NG", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
   });
 
 /* The backend has no friendly room-type name anywhere — "standard", "deluxe"

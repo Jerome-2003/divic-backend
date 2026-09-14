@@ -47,7 +47,9 @@ const quoteLimiter = rateLimit({
 
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
 const clean = (s, max = 200) => String(s || "").trim().slice(0, max);
-const today = () => new Date().toISOString().slice(0, 10);
+// The hotel's day, not UTC's — a guest booking just after midnight must not
+// be told their own date is in the past.
+const { today, dayStart } = require("../utils/day");
 
 /** GET /api/public/properties — everything the website needs to render itself. */
 router.get("/properties", async (_req, res, next) => {

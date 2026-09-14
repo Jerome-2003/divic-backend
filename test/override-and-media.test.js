@@ -519,5 +519,49 @@ console.log("\n=== the menu is a manager's to write ===");
 }
 
 
+// ---------- when a day starts here ----------
+console.log("\n=== the hotel's day ===");
+{
+  const { today, dayOf, dayStart, dayEnd, shiftDays, daysBetween, TZ } = require("../utils/day");
+
+  check("the zone is the hotel's, not the server's", TZ === "Africa/Lagos");
+
+  // Lagos is UTC+1, so its day begins at 23:00 UTC the evening before. Every
+  // figure on the dashboard used to start an hour late because of this.
+  check("a day begins at 23:00 UTC the night before",
+    dayStart("2026-09-14").toISOString() === "2026-09-13T23:00:00.000Z");
+  check("and ends when the next one starts, exclusive",
+    dayEnd("2026-09-14").toISOString() === dayStart("2026-09-15").toISOString());
+  check("a day is exactly 24 hours long",
+    dayEnd("2026-09-14") - dayStart("2026-09-14") === 86400000);
+
+  // The hour that was wrong: half past midnight in Lagos.
+  const justAfterMidnight = new Date("2026-09-14T23:30:00Z");
+  check("a sale at 00:30 belongs to the new day", dayOf(justAfterMidnight) === "2026-09-15");
+  check("...which UTC would have called the old one",
+    justAfterMidnight.toISOString().slice(0, 10) === "2026-09-14");
+  check("...and it falls inside the new day's window",
+    justAfterMidnight >= dayStart("2026-09-15") && justAfterMidnight < dayEnd("2026-09-15"));
+  check("...and outside the old day's",
+    !(justAfterMidnight >= dayStart("2026-09-14") && justAfterMidnight < dayEnd("2026-09-14")));
+
+  // The last minute of a day has to count as that day, or a night's takings
+  // lose their busiest hour.
+  const lastMinute = new Date("2026-09-14T22:59:59Z"); // 23:59:59 in Lagos
+  check("the last second of the evening is still today", dayOf(lastMinute) === "2026-09-14");
+  check("...and inside today's window",
+    lastMinute >= dayStart("2026-09-14") && lastMinute < dayEnd("2026-09-14"));
+
+  // Every instant belongs to exactly one day, with no gap and no overlap.
+  check("days do not overlap", dayEnd("2026-09-14").getTime() === dayStart("2026-09-15").getTime());
+
+  check("today is a real date", /^\d{4}-\d{2}-\d{2}$/.test(today()));
+  check("shifting a day crosses a month end", shiftDays("2026-09-30", 1) === "2026-10-01");
+  check("shifting back crosses a year end", shiftDays("2027-01-01", -1) === "2026-12-31");
+  check("a week is seven days", daysBetween("2026-09-09", "2026-09-16") === 7);
+  check("February in a leap year has 29", daysBetween("2028-02-01", "2028-03-01") === 29);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);

@@ -50,20 +50,11 @@ async function inHouseRoom(facility, roomNumber) {
     bookingId: booking._id,
   };
 }
-const today = () => new Date().toISOString().slice(0, 10);
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
-const shiftDays = (iso, n) => {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
-
-/** "2026-09-13" + 30 days -> "2026-10-13" */
-function addDays(isoDate, days) {
-  const d = new Date(isoDate + "T00:00:00.000Z");
-  d.setUTCDate(d.getUTCDate() + Number(days));
-  return d.toISOString().slice(0, 10);
-}
+// The hotel's day, not UTC's. A bar sells past midnight, so this is the file
+// where an hour's drift is most visible: a round bought at half past twelve
+// belongs to tonight's takings, not to yesterday's.
+const { today, dayOf, dayStart, dayEnd, shiftDays } = require("../utils/day");
 
 const itemJSON = (i) => ({
   id: i._id, name: i.name, category: i.category, price: i.price, active: i.active,
@@ -211,8 +202,8 @@ router.get("/:facilityId/tabs", requireModule("pos"), requireAssignedFacility(),
     const asked = req.query.status;
     const status = ["open", "settled", "all"].includes(asked) ? asked : "open";
     const date = isDate(req.query.date) ? req.query.date : today();
-    const dayStart = new Date(date + "T00:00:00.000Z");
-    const dayEnd = new Date(dayStart.getTime() + 86400000);
+    const from = dayStart(date);
+    const until = dayEnd(date);
 
     const filter = { facility: req.facility._id };
     if (status === "open") {
@@ -220,12 +211,12 @@ router.get("/:facilityId/tabs", requireModule("pos"), requireAssignedFacility(),
     } else if (status === "settled") {
       // A settled tab is history; only the chosen day's is worth loading.
       filter.status = "settled";
-      filter.settledAt = { $gte: dayStart, $lt: dayEnd };
+      filter.settledAt = { $gte: from, $lt: until };
     } else {
       // Everything still open, plus everything closed on the day asked about.
       filter.$or = [
         { status: "open" },
-        { status: "settled", settledAt: { $gte: dayStart, $lt: dayEnd } },
+        { status: "settled", settledAt: { $gte: from, $lt: until } },
       ];
     }
 
@@ -734,10 +725,10 @@ router.get("/:facilityId/sales", requireRole("manager", "owner"), requireAssigne
     const from = isDate(req.query.from) ? req.query.from : shiftDays(to, -6);
     if (from > to) return res.status(400).json({ error: "The start date is after the end date." });
 
-    const start = new Date(from + "T00:00:00.000Z");
+    const start = dayStart(from);
     // Exclusive end on the day after, or everything sold on the last day of
     // the range is silently left out.
-    const end = new Date(new Date(to + "T00:00:00.000Z").getTime() + 86400000);
+    const end = dayEnd(to);
 
     const tabs = await Tab.find({
       facility: req.facility._id, status: "settled", voided: { $ne: true },
@@ -753,7 +744,7 @@ router.get("/:facilityId/sales", requireRole("manager", "owner"), requireAssigne
     let paidAtTill = 0;
 
     tabs.forEach((t) => {
-      const day = new Date(t.settledAt).toISOString().slice(0, 10);
+      const day = dayOf(t.settledAt);
       const d = (byDay[day] = byDay[day] || { date: day, total: 0, orders: 0, room: 0, till: 0 });
       d.total += t.total;
       d.orders += 1;
@@ -811,8 +802,8 @@ router.get("/:facilityId/visits", requireModule("pos"), requireAssignedFacility(
   try {
     const date = req.query.date ? clean(req.query.date, 10) : today();
     if (!isDate(date)) return res.status(400).json({ error: "Send the date as YYYY-MM-DD." });
-    const from = new Date(date + "T00:00:00.000Z");
-    const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+    const from = dayStart(date);
+    const to = dayEnd(date);
 
     const visits = await FacilityVisit.find({
       facility: req.facility._id, createdAt: { $gte: from, $lt: to },
@@ -1018,7 +1009,7 @@ router.post("/:facilityId/memberships", requireModule("pos"), requireAssignedFac
     if (!plan) return res.status(404).json({ error: "Choose one of this gym's plans." });
 
     const startsOn = isDate(req.body.startsOn) ? req.body.startsOn : today();
-    const endsOn = addDays(startsOn, plan.days);
+    const endsOn = shiftDays(startsOn, plan.days);
     const description = facility.name + " " + plan.name + " membership — " + memberName;
 
     const result = await settleFacilitySale({
