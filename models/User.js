@@ -18,6 +18,25 @@ const userSchema = new mongoose.Schema(
     // enforced in routes/staff.routes.js.
     assignedFacilities: [{ type: mongoose.Schema.Types.ObjectId, ref: "Facility" }],
     phone: { type: String, trim: true },
+
+    /**
+     * The week this person is meant to work, set by a manager on the account.
+     *
+     * One entry per weekday at most, and a day with no entry is a day off —
+     * absence is the right shape for "not in on Tuesdays", rather than a row
+     * that has to mean nothing. `day` is 0 for Sunday, matching JavaScript;
+     * the screens read the week Monday-first because that is how it is said
+     * aloud.
+     *
+     * A shift whose end is at or before its start runs through midnight, which
+     * is the ordinary case for a bar. See services/roster.js.
+     */
+    shifts: [{
+      _id: false,
+      day: { type: Number, min: 0, max: 6, required: true },
+      startsAt: { type: String, required: true },   // "18:00"
+      endsAt: { type: String, required: true },     // "02:00"
+    }],
     active: { type: Boolean, default: true },
     lastLoginAt: Date,
 
@@ -50,6 +69,7 @@ userSchema.methods.toSafeJSON = function () {
     id: this._id, name: this.name, username: this.username, role: this.role,
     location: this.location, phone: this.phone, active: this.active,
     assignedFacilities: (this.assignedFacilities || []).map(String),
+    shifts: (this.shifts || []).map((s) => ({ day: s.day, startsAt: s.startsAt, endsAt: s.endsAt })),
     tourSeenAt: this.tourSeenAt || null,
   };
 };

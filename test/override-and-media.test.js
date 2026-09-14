@@ -563,5 +563,71 @@ console.log("\n=== the hotel's day ===");
 }
 
 
+// ---------- rosters and night shifts ----------
+console.log("\n=== who is meant to be on ===");
+{
+  const { onRosterAt, badRoster, cleanRoster, lengthOf, wrapsMidnight } = require("../services/roster");
+
+  // Times are in Africa/Lagos, an hour ahead of UTC, so the instants below
+  // read an hour later than they look.
+  const at = (iso) => new Date(iso);
+
+  const weekday = [{ day: 1, startsAt: "08:00", endsAt: "16:00" }];   // Monday
+  check("on shift in the middle of it",
+    onRosterAt(weekday, at("2026-09-14T10:00:00Z")).on === true);      // Mon 11:00
+  check("off before it starts",
+    onRosterAt(weekday, at("2026-09-14T05:00:00Z")).on === false);     // Mon 06:00
+  check("off after it ends",
+    onRosterAt(weekday, at("2026-09-14T17:00:00Z")).on === false);     // Mon 18:00
+  check("the end is exclusive — 16:00 is off",
+    onRosterAt(weekday, at("2026-09-14T15:00:00Z")).on === false);     // Mon 16:00
+  check("the start is inclusive — 08:00 is on",
+    onRosterAt(weekday, at("2026-09-14T07:00:00Z")).on === true);      // Mon 08:00
+  check("a different day is off",
+    onRosterAt(weekday, at("2026-09-15T10:00:00Z")).on === false);     // Tue
+
+  // The case that makes this more than a comparison: a bar shift that ends
+  // after midnight is worked on two calendar days.
+  const night = [{ day: 5, startsAt: "18:00", endsAt: "02:00" }];      // Friday night
+  check("a night shift wraps past midnight", wrapsMidnight(night[0]) === true);
+  check("...and is eight hours, not minus sixteen", lengthOf(night[0]) === 480);
+  check("on shift on Friday evening",
+    onRosterAt(night, at("2026-09-18T19:00:00Z")).on === true);        // Fri 20:00
+  check("still on shift at 1am on Saturday",
+    onRosterAt(night, at("2026-09-19T00:00:00Z")).on === true);        // Sat 01:00
+  check("off by 4am on Saturday",
+    onRosterAt(night, at("2026-09-19T03:00:00Z")).on === false);       // Sat 04:00
+  check("and not on at Friday lunchtime",
+    onRosterAt(night, at("2026-09-18T11:00:00Z")).on === false);       // Fri 12:00
+  check("the shift it reports is the right one",
+    onRosterAt(night, at("2026-09-19T00:00:00Z")).shift.startsAt === "18:00");
+
+  check("nobody with no roster is ever due on", onRosterAt([], new Date()).on === false);
+  check("...and an absent roster does not throw", onRosterAt(undefined, new Date()).on === false);
+
+  // Validation.
+  check("a good roster passes", badRoster([{ day: 1, startsAt: "08:00", endsAt: "16:00" }]) === null);
+  check("an absent roster is allowed", badRoster(undefined) === null);
+  check("two shifts on one day are refused",
+    badRoster([{ day: 1, startsAt: "08:00", endsAt: "12:00" }, { day: 1, startsAt: "13:00", endsAt: "17:00" }]) !== null);
+  check("a day outside the week is refused",
+    badRoster([{ day: 9, startsAt: "08:00", endsAt: "16:00" }]) !== null);
+  check("a bad time is refused", badRoster([{ day: 1, startsAt: "8am", endsAt: "16:00" }]) !== null);
+  check("25:00 is refused", badRoster([{ day: 1, startsAt: "25:00", endsAt: "26:00" }]) !== null);
+  // A zero-length shift is a typo every time; a wrap is not.
+  check("a shift ending when it starts is refused",
+    badRoster([{ day: 1, startsAt: "08:00", endsAt: "08:00" }]) !== null);
+  check("a wrapping shift is accepted",
+    badRoster([{ day: 5, startsAt: "18:00", endsAt: "02:00" }]) === null);
+
+  // The week reads Monday first, whatever order it was typed in.
+  const tidied = cleanRoster([
+    { day: 0, startsAt: "10:00", endsAt: "14:00" },
+    { day: 1, startsAt: "08:00", endsAt: "16:00" },
+  ]);
+  check("Monday comes before Sunday", tidied[0].day === 1 && tidied[1].day === 0);
+}
+
+
 console.log("\n" + (fail === 0 ? "ALL " + pass + " NEW CHECKS PASSED" : pass + " passed, " + fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);

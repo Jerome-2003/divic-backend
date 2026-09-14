@@ -90,4 +90,21 @@ function daysBetween(from, to) {
   );
 }
 
-module.exports = { TZ, today, dayOf, dayStart, dayEnd, shiftDays, daysBetween, offsetMs };
+/** Minutes past midnight, here — 0 to 1439. */
+function minutesNow(at = new Date()) {
+  const [h, m] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TZ, hour12: false, hour: "2-digit", minute: "2-digit",
+  }).format(at).split(":").map(Number);
+  return ((h === 24 ? 0 : h) * 60) + m;
+}
+
+/** Day of the week here, 0 = Sunday, matching JavaScript's own numbering. */
+function weekdayOf(at = new Date()) {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short" }).format(at);
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name);
+}
+
+module.exports = {
+  TZ, today, dayOf, dayStart, dayEnd, shiftDays, daysBetween, offsetMs,
+  minutesNow, weekdayOf,
+};

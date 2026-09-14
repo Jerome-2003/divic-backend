@@ -5,6 +5,8 @@ const User = require("../models/User");
 const { requireAuth } = require("../middleware/auth");
 const { PERMISSIONS } = require("../utils/constants");
 const { logAction } = require("../services/audit");
+const { startShift, endShift, openShiftFor } = require("../services/shifts");
+const { onRosterAt } = require("../services/roster");
 
 const loginLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -79,16 +81,60 @@ router.post("/login", loginLimiter, async (req, res, next) => {
     await user.save();
 
     const token = jwt.sign({ sub: String(user._id), role: user.role }, process.env.JWT_SECRET, { expiresIn: "12h" });
-    logAction({ user: user.toSafeJSON(), headers: req.headers, ip: req.ip },
-      { action: user.name + " signed in", entity: "User", entityId: user._id, location: user.location });
 
-    res.json({ token, user: user.toSafeJSON(), permissions: PERMISSIONS[user.role] });
+    // Signing in is the one moment the system can be sure somebody has
+    // arrived, so it is where a shift opens. Idempotent — signing in again
+    // mid-morning is the same shift, not a second one.
+    const { shift, opened } = await startShift(user);
+    const roster = onRosterAt(user.shifts, new Date());
+
+    logAction({ user: user.toSafeJSON(), headers: req.headers, ip: req.ip },
+      {
+        action: user.name + " signed in" +
+          (opened ? (roster.on ? " and started their shift" : " and started an unrostered shift") : ""),
+        entity: "User", entityId: user._id, location: user.location,
+      });
+
+    res.json({
+      token, user: user.toSafeJSON(), permissions: PERMISSIONS[user.role],
+      shift: { startedAt: shift.startedAt, onRoster: roster.on },
+    });
   } catch (e) { next(e); }
 });
 
 // Lets the account-management screen show which staff accounts need an
 // authorised unlock. The actual unlock endpoint is in /api/staff because that
 // router is already restricted to manager/owner accounts.
+
+/**
+ * POST /api/auth/end-shift — "I am going home", as opposed to "I am signing
+ * out of this computer". The two are different and the app asks which.
+ */
+router.post("/end-shift", requireAuth, async (req, res, next) => {
+  try {
+    const shift = await endShift(req.user.id, req.user.id);
+    if (!shift) return res.json({ ended: false });
+    const minutes = Math.round((shift.endedAt - shift.startedAt) / 60000);
+    logAction(req, {
+      action: req.user.name + " ended their shift after " +
+        Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m",
+      entity: "Shift", entityId: shift._id, location: shift.location,
+    });
+    res.json({ ended: true, startedAt: shift.startedAt, endedAt: shift.endedAt, minutes });
+  } catch (e) { next(e); }
+});
+
+/** Whether this person has a shift open, for the sign-out dialog to ask well. */
+router.get("/my-shift", requireAuth, async (req, res, next) => {
+  try {
+    const shift = await openShiftFor(req.user.id);
+    res.json({
+      open: Boolean(shift),
+      startedAt: shift?.startedAt || null,
+      minutes: shift ? Math.round((new Date() - shift.startedAt) / 60000) : 0,
+    });
+  } catch (e) { next(e); }
+});
 
 router.get("/me", requireAuth, async (req, res) => {
   res.json({ user: req.user, permissions: PERMISSIONS[req.user.role] });
