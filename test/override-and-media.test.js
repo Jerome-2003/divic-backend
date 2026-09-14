@@ -563,69 +563,81 @@ console.log("\n=== the hotel's day ===");
 }
 
 
-// ---------- rosters and night shifts ----------
+// ---------- two shifts round the clock ----------
 console.log("\n=== who is meant to be on ===");
 {
-  const { onRosterAt, badRoster, cleanRoster, lengthOf, wrapsMidnight } = require("../services/roster");
+  const { onRosterAt, badRoster, badTimes, cleanRoster, windowsFor, lengthOf, covers, minutesOf }
+    = require("../services/roster");
 
-  // Times are in Africa/Lagos, an hour ahead of UTC, so the instants below
-  // read an hour later than they look.
-  const at = (iso) => new Date(iso);
+  const times = { morningStartsAt: "07:00", nightStartsAt: "19:00" };
+  const w = windowsFor(times);
 
-  const weekday = [{ day: 1, startsAt: "08:00", endsAt: "16:00" }];   // Monday
-  check("on shift in the middle of it",
-    onRosterAt(weekday, at("2026-09-14T10:00:00Z")).on === true);      // Mon 11:00
-  check("off before it starts",
-    onRosterAt(weekday, at("2026-09-14T05:00:00Z")).on === false);     // Mon 06:00
-  check("off after it ends",
-    onRosterAt(weekday, at("2026-09-14T17:00:00Z")).on === false);     // Mon 18:00
-  check("the end is exclusive — 16:00 is off",
-    onRosterAt(weekday, at("2026-09-14T15:00:00Z")).on === false);     // Mon 16:00
-  check("the start is inclusive — 08:00 is on",
-    onRosterAt(weekday, at("2026-09-14T07:00:00Z")).on === true);      // Mon 08:00
-  check("a different day is off",
-    onRosterAt(weekday, at("2026-09-15T10:00:00Z")).on === false);     // Tue
+  // The point of setting two times rather than four: the shifts tile the
+  // clock. A gap at dawn covered by nobody cannot be expressed.
+  check("morning runs to the night's start", w.morning.endsAt === times.nightStartsAt);
+  check("night runs to the morning's start", w.night.endsAt === times.morningStartsAt);
+  check("together they are exactly 24 hours", lengthOf(w.morning) + lengthOf(w.night) === 1440);
+  check("no minute is covered by both",
+    [0, 6 * 60, 7 * 60, 12 * 60, 18 * 60, 19 * 60, 23 * 60].every(
+      (m) => covers(w.morning, m) !== covers(w.night, m)));
 
-  // The case that makes this more than a comparison: a bar shift that ends
-  // after midnight is worked on two calendar days.
-  const night = [{ day: 5, startsAt: "18:00", endsAt: "02:00" }];      // Friday night
-  check("a night shift wraps past midnight", wrapsMidnight(night[0]) === true);
-  check("...and is eight hours, not minus sixteen", lengthOf(night[0]) === 480);
-  check("on shift on Friday evening",
-    onRosterAt(night, at("2026-09-18T19:00:00Z")).on === true);        // Fri 20:00
-  check("still on shift at 1am on Saturday",
-    onRosterAt(night, at("2026-09-19T00:00:00Z")).on === true);        // Sat 01:00
-  check("off by 4am on Saturday",
-    onRosterAt(night, at("2026-09-19T03:00:00Z")).on === false);       // Sat 04:00
-  check("and not on at Friday lunchtime",
-    onRosterAt(night, at("2026-09-18T11:00:00Z")).on === false);       // Fri 12:00
-  check("the shift it reports is the right one",
-    onRosterAt(night, at("2026-09-19T00:00:00Z")).shift.startsAt === "18:00");
+  // Uneven shifts still tile.
+  const early = windowsFor({ morningStartsAt: "06:00", nightStartsAt: "22:00" });
+  check("a 16/8 split still covers the whole day",
+    lengthOf(early.morning) + lengthOf(early.night) === 1440);
+  check("...with the long one being the morning", lengthOf(early.morning) === 960);
 
-  check("nobody with no roster is ever due on", onRosterAt([], new Date()).on === false);
-  check("...and an absent roster does not throw", onRosterAt(undefined, new Date()).on === false);
+  const at = (iso) => new Date(iso);   // times below are Lagos, an hour ahead
+  const mornings = [{ day: 1, shift: "morning" }];   // Monday mornings
+  check("on shift mid-morning", onRosterAt(mornings, times, at("2026-09-14T10:00:00Z")).on === true);
+  check("off before the changeover", onRosterAt(mornings, times, at("2026-09-14T05:00:00Z")).on === false);
+  check("off after the night takes over", onRosterAt(mornings, times, at("2026-09-14T19:00:00Z")).on === false);
+  check("on at the very start", onRosterAt(mornings, times, at("2026-09-14T06:00:00Z")).on === true);
+  check("off on another day", onRosterAt(mornings, times, at("2026-09-15T10:00:00Z")).on === false);
+  check("it names the shift", onRosterAt(mornings, times, at("2026-09-14T10:00:00Z")).shift === "morning");
+
+  // Half of every day at a hotel: the night shift crosses midnight.
+  const nights = [{ day: 1, shift: "night" }];       // Monday nights
+  check("on at nine on Monday evening",
+    onRosterAt(nights, times, at("2026-09-14T20:00:00Z")).on === true);        // Mon 21:00
+  check("still on at two on Tuesday morning",
+    onRosterAt(nights, times, at("2026-09-15T01:00:00Z")).on === true);        // Tue 02:00
+  check("...and it is still counted as the Monday night shift",
+    onRosterAt(nights, times, at("2026-09-15T01:00:00Z")).shift === "night");
+  check("off by eight on Tuesday morning",
+    onRosterAt(nights, times, at("2026-09-15T07:00:00Z")).on === false);       // Tue 08:00
+  check("not on during Monday daytime",
+    onRosterAt(nights, times, at("2026-09-14T10:00:00Z")).on === false);
+
+  // Somebody on mornings is not dragged in by the previous night's wrap.
+  check("a morning person is off at 2am",
+    onRosterAt(mornings, times, at("2026-09-15T01:00:00Z")).on === false);
+
+  check("no roster means never due", onRosterAt([], times, new Date()).on === false);
+  check("an absent roster does not throw", onRosterAt(undefined, times, new Date()).on === false);
+  check("missing times fall back to sensible ones",
+    onRosterAt(mornings, undefined, at("2026-09-14T10:00:00Z")).on === true);
 
   // Validation.
-  check("a good roster passes", badRoster([{ day: 1, startsAt: "08:00", endsAt: "16:00" }]) === null);
+  check("a good roster passes", badRoster([{ day: 1, shift: "morning" }]) === null);
   check("an absent roster is allowed", badRoster(undefined) === null);
-  check("two shifts on one day are refused",
-    badRoster([{ day: 1, startsAt: "08:00", endsAt: "12:00" }, { day: 1, startsAt: "13:00", endsAt: "17:00" }]) !== null);
-  check("a day outside the week is refused",
-    badRoster([{ day: 9, startsAt: "08:00", endsAt: "16:00" }]) !== null);
-  check("a bad time is refused", badRoster([{ day: 1, startsAt: "8am", endsAt: "16:00" }]) !== null);
-  check("25:00 is refused", badRoster([{ day: 1, startsAt: "25:00", endsAt: "26:00" }]) !== null);
-  // A zero-length shift is a typo every time; a wrap is not.
-  check("a shift ending when it starts is refused",
-    badRoster([{ day: 1, startsAt: "08:00", endsAt: "08:00" }]) !== null);
-  check("a wrapping shift is accepted",
-    badRoster([{ day: 5, startsAt: "18:00", endsAt: "02:00" }]) === null);
+  check("two entries on one day are refused",
+    badRoster([{ day: 1, shift: "morning" }, { day: 1, shift: "night" }]) !== null);
+  check("an invented shift is refused", badRoster([{ day: 1, shift: "afternoon" }]) !== null);
+  check("a day outside the week is refused", badRoster([{ day: 9, shift: "night" }]) !== null);
 
-  // The week reads Monday first, whatever order it was typed in.
-  const tidied = cleanRoster([
-    { day: 0, startsAt: "10:00", endsAt: "14:00" },
-    { day: 1, startsAt: "08:00", endsAt: "16:00" },
-  ]);
+  check("good times pass", badTimes(times) === null);
+  check("a bad time is refused", badTimes({ morningStartsAt: "7am", nightStartsAt: "19:00" }) !== null);
+  check("25:00 is refused", badTimes({ morningStartsAt: "25:00", nightStartsAt: "19:00" }) !== null);
+  // Both shifts changing over at once would make one the whole day and the
+  // other nothing at all.
+  check("identical changeover times are refused",
+    badTimes({ morningStartsAt: "07:00", nightStartsAt: "07:00" }) !== null);
+
+  const tidied = cleanRoster([{ day: 0, shift: "night" }, { day: 1, shift: "morning" }]);
   check("Monday comes before Sunday", tidied[0].day === 1 && tidied[1].day === 0);
+  check("junk entries are dropped",
+    cleanRoster([{ day: 2, shift: "brunch" }, { day: 3, shift: "night" }]).length === 1);
 }
 
 

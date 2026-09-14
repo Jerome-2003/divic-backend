@@ -33,6 +33,10 @@ const shiftSchema = new mongoose.Schema(
      * it, so the answer is written down when it is still true.
      */
     wasRostered: { type: Boolean, default: false },
+    // Which shift, and the hours it ran to on the day — the changeover times
+    // are a live setting and a manager moving them next month must not rewrite
+    // what last month's shifts were.
+    rosteredShift: { type: String, enum: ["morning", "night"] },
     rosteredStart: String,
     rosteredEnd: String,
   },

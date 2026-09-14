@@ -5,8 +5,9 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 const { logAction } = require("../services/audit");
 const { ROLES } = require("../utils/constants");
 const Shift = require("../models/Shift");
-const { badRoster, cleanRoster, onRosterAt } = require("../services/roster");
-const { endShift } = require("../services/shifts");
+const ShiftTimes = require("../models/ShiftTimes");
+const { badRoster, badTimes, cleanRoster, onRosterAt, windowsFor, DEFAULT_TIMES } = require("../services/roster");
+const { endShift, timesFor } = require("../services/shifts");
 const { dayStart, dayEnd, today, shiftDays } = require("../utils/day");
 
 router.use(requireAuth, requireRole("manager", "owner"));
@@ -54,10 +55,15 @@ router.get("/", async (req, res, next) => {
     }).select("user startedAt wasRostered").lean();
     const openBy = Object.fromEntries(open.map((s) => [String(s.user), s]));
 
+    // Both properties' changeover times, fetched once. A manager covering
+    // both sees each person judged against their own building's hours.
+    const allTimes = await ShiftTimes.find().lean();
+    const timesBy = Object.fromEntries(allTimes.map((t) => [t.location, t]));
+
     const now = new Date();
     res.json(users.map((u) => {
       const shift = openBy[String(u._id)];
-      const roster = onRosterAt(u.shifts, now);
+      const roster = onRosterAt(u.shifts, timesBy[u.location] || DEFAULT_TIMES, now);
       return {
         ...u.toSafeJSON(),
         lastLoginAt: u.lastLoginAt,
@@ -69,7 +75,8 @@ router.get("/", async (req, res, next) => {
         shiftStartedAt: shift?.startedAt || null,
         shiftMinutes: shift ? Math.round((now - new Date(shift.startedAt)) / 60000) : 0,
         dueOn: roster.on,
-        dueWindow: roster.shift ? roster.shift.startsAt + "–" + roster.shift.endsAt : null,
+        dueShift: roster.shift,
+        dueWindow: roster.window ? roster.window.startsAt + "–" + roster.window.endsAt : null,
       };
     }));
   } catch (e) { next(e); }
@@ -291,10 +298,79 @@ router.get("/shifts", async (req, res, next) => {
       open: !s.endedAt,
       minutes: Math.round(((s.endedAt || now) - new Date(s.startedAt)) / 60000),
       wasRostered: !!s.wasRostered,
+      rosteredShift: s.rosteredShift || null,
       rosteredWindow: s.rosteredStart ? s.rosteredStart + "–" + s.rosteredEnd : null,
       // Only set when somebody else closed it, which is worth seeing.
       endedByOther: s.endedBy && String(s.endedBy._id) !== String(s.user?._id) ? s.endedBy.name : null,
     })));
+  } catch (e) { next(e); }
+});
+
+/* ------------------------------------------------------------------ */
+/*  SHIFT TIMES — when the two shifts change over                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GET /api/staff/shift-times — both properties' changeover times.
+ *
+ * Two numbers per property, not four: when mornings start and when nights do,
+ * each shift running until the other begins. Four free times could be set to
+ * leave an hour at dawn covered by nobody, and that mistake surfaces weeks
+ * later as an argument rather than at the moment it is made.
+ */
+router.get("/shift-times", async (req, res, next) => {
+  try {
+    const rows = await ShiftTimes.find().lean();
+    const by = Object.fromEntries(rows.map((r) => [r.location, r]));
+    res.json(["exclusive", "urban"].map((location) => {
+      const t = by[location] || DEFAULT_TIMES;
+      const w = windowsFor(t);
+      return {
+        location,
+        morningStartsAt: t.morningStartsAt,
+        nightStartsAt: t.nightStartsAt,
+        // Worked out here so the screens and the roster can never disagree
+        // about which hours a shift actually covers.
+        windows: { morning: w.morning, night: w.night },
+        isDefault: !by[location],
+      };
+    }));
+  } catch (e) { next(e); }
+});
+
+/** PUT /api/staff/shift-times — a manager or owner moving the changeover. */
+router.put("/shift-times", async (req, res, next) => {
+  try {
+    const { location, morningStartsAt, nightStartsAt } = req.body || {};
+    if (!["exclusive", "urban"].includes(location)) {
+      return res.status(400).json({ error: "Choose a property." });
+    }
+    if (req.user.location !== "all" && req.user.location !== location) {
+      return res.status(403).json({ error: "You can only set the hours at your own property." });
+    }
+    const bad = badTimes({ morningStartsAt, nightStartsAt });
+    if (bad) return res.status(400).json({ error: bad });
+
+    const before = await ShiftTimes.findOne({ location }).lean();
+    const doc = await ShiftTimes.findOneAndUpdate(
+      { location },
+      { morningStartsAt, nightStartsAt, updatedBy: req.user.id },
+      { new: true, upsert: true }
+    );
+
+    logAction(req, {
+      action: "Set the shift changeover at " + location + " to mornings from " +
+        morningStartsAt + " and nights from " + nightStartsAt,
+      entity: "ShiftTimes", entityId: doc._id, location,
+      before: before ? { morningStartsAt: before.morningStartsAt, nightStartsAt: before.nightStartsAt } : null,
+      after: { morningStartsAt, nightStartsAt },
+    });
+
+    const w = windowsFor(doc);
+    res.json({
+      location, morningStartsAt: doc.morningStartsAt, nightStartsAt: doc.nightStartsAt,
+      windows: { morning: w.morning, night: w.night },
+    });
   } catch (e) { next(e); }
 });
 

@@ -1,5 +1,13 @@
 const Shift = require("../models/Shift");
-const { onRosterAt } = require("./roster");
+const ShiftTimes = require("../models/ShiftTimes");
+const { onRosterAt, DEFAULT_TIMES } = require("./roster");
+
+/** The changeover times at a property, or the defaults if none are set yet. */
+async function timesFor(location) {
+  if (location === "all") return DEFAULT_TIMES;
+  const doc = await ShiftTimes.findOne({ location }).lean();
+  return doc || DEFAULT_TIMES;
+}
 
 /**
  * Opening and closing the shift somebody is actually working.
@@ -26,15 +34,17 @@ async function startShift(user) {
 
   // What the roster said right now, written down while it is still true. A
   // manager editing the roster next week must not change what today looked like.
-  const { on, shift: rostered } = onRosterAt(user.shifts, new Date());
+  const times = await timesFor(user.location);
+  const { on, shift: which, window } = onRosterAt(user.shifts, times, new Date());
 
   const shift = await Shift.create({
     user: user._id,
     location: user.location,
     startedAt: new Date(),
     wasRostered: on,
-    rosteredStart: rostered?.startsAt,
-    rosteredEnd: rostered?.endsAt,
+    rosteredShift: which || undefined,
+    rosteredStart: window?.startsAt,
+    rosteredEnd: window?.endsAt,
   });
   return { shift, opened: true };
 }
@@ -53,4 +63,4 @@ async function endShift(userId, by) {
 const minutesWorked = (shift) =>
   Math.max(0, Math.round(((shift.endedAt || new Date()) - shift.startedAt) / 60000));
 
-module.exports = { openShiftFor, startShift, endShift, minutesWorked };
+module.exports = { openShiftFor, startShift, endShift, minutesWorked, timesFor };
