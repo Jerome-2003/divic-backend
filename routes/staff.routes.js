@@ -6,7 +6,7 @@ const { logAction } = require("../services/audit");
 const { ROLES } = require("../utils/constants");
 const Shift = require("../models/Shift");
 const ShiftTimes = require("../models/ShiftTimes");
-const { badRoster, badTimes, cleanRoster, onRosterAt, windowsFor, DEFAULT_TIMES } = require("../services/roster");
+const { badRoster, badTimes, cleanRoster, onRosterAt, shiftsOn, windowsFor, DEFAULT_TIMES } = require("../services/roster");
 const { endShift, timesFor } = require("../services/shifts");
 const { dayStart, dayEnd, today, shiftDays } = require("../utils/day");
 
@@ -77,6 +77,10 @@ router.get("/", async (req, res, next) => {
         dueOn: roster.on,
         dueShift: roster.shift,
         dueWindow: roster.window ? roster.window.startsAt + "–" + roster.window.endsAt : null,
+        // What the whole of today asks of them. Two entries is a double, and a
+        // manager reading the board needs to see that before somebody has been
+        // there sixteen hours.
+        dueToday: shiftsOn(u.shifts, now),
       };
     }));
   } catch (e) { next(e); }
@@ -121,7 +125,9 @@ router.post("/", async (req, res, next) => {
 
     logAction(req, {
       action: "Created a " + role + " account for " + name +
-        (user.shifts.length ? " on a " + user.shifts.length + "-day roster" : " with no shifts set"),
+        (user.shifts.length
+          ? " on a roster of " + user.shifts.length + " shift" + (user.shifts.length === 1 ? "" : "s")
+          : " with no shifts set"),
       entity: "User", entityId: user._id,
     });
     res.status(201).json(user.toSafeJSON());

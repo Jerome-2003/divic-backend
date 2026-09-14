@@ -566,7 +566,7 @@ console.log("\n=== the hotel's day ===");
 // ---------- two shifts round the clock ----------
 console.log("\n=== who is meant to be on ===");
 {
-  const { onRosterAt, badRoster, badTimes, cleanRoster, windowsFor, lengthOf, covers, minutesOf }
+  const { onRosterAt, shiftsOn, badRoster, badTimes, cleanRoster, windowsFor, lengthOf, covers, minutesOf }
     = require("../services/roster");
 
   const times = { morningStartsAt: "07:00", nightStartsAt: "19:00" };
@@ -621,8 +621,13 @@ console.log("\n=== who is meant to be on ===");
   // Validation.
   check("a good roster passes", badRoster([{ day: 1, shift: "morning" }]) === null);
   check("an absent roster is allowed", badRoster(undefined) === null);
-  check("two entries on one day are refused",
-    badRoster([{ day: 1, shift: "morning" }, { day: 1, shift: "night" }]) !== null);
+  // A double is a real thing a short-staffed week asks for, so it is allowed.
+  check("both shifts on one day are allowed",
+    badRoster([{ day: 1, shift: "morning" }, { day: 1, shift: "night" }]) === null);
+  check("the same shift twice on one day is refused",
+    badRoster([{ day: 1, shift: "night" }, { day: 1, shift: "night" }]) !== null);
+  check("a fortnight's worth of entries is refused",
+    badRoster(Array.from({ length: 15 }, () => ({ day: 1, shift: "morning" }))) !== null);
   check("an invented shift is refused", badRoster([{ day: 1, shift: "afternoon" }]) !== null);
   check("a day outside the week is refused", badRoster([{ day: 9, shift: "night" }]) !== null);
 
@@ -638,6 +643,38 @@ console.log("\n=== who is meant to be on ===");
   check("Monday comes before Sunday", tidied[0].day === 1 && tidied[1].day === 0);
   check("junk entries are dropped",
     cleanRoster([{ day: 2, shift: "brunch" }, { day: 3, shift: "night" }]).length === 1);
+
+  const double = cleanRoster([{ day: 1, shift: "night" }, { day: 1, shift: "morning" }]);
+  check("a double survives tidying", double.length === 2);
+  check("...with the morning first, since the night runs out of it",
+    double[0].shift === "morning" && double[1].shift === "night");
+  check("a shift written twice is collapsed",
+    cleanRoster([{ day: 1, shift: "night" }, { day: 1, shift: "night" }]).length === 1);
+
+  // ---- somebody covering a whole day on their own ----
+  const both = [{ day: 1, shift: "morning" }, { day: 1, shift: "night" }];
+  check("on a double at ten in the morning",
+    onRosterAt(both, times, at("2026-09-14T10:00:00Z")).shift === "morning");   // Mon 11:00
+  check("still on the same double at nine at night",
+    onRosterAt(both, times, at("2026-09-14T20:00:00Z")).shift === "night");     // Mon 21:00
+  check("and at two the next morning, on the night half",
+    onRosterAt(both, times, at("2026-09-15T01:00:00Z")).on === true);           // Tue 02:00
+  check("off once the Tuesday morning shift takes over",
+    onRosterAt(both, times, at("2026-09-15T07:00:00Z")).on === false);          // Tue 08:00
+  // Half past each Lagos hour, which is an hour ahead of UTC.
+  const lagos = (d, h) => new Date(Date.UTC(2026, 8, d, h - 1, 30));
+  check("a double runs unbroken from its start to the next morning",
+    [...Array(17)].map((_, i) => lagos(14, 7 + i))          // Mon 07:30 – 23:30
+      .concat([...Array(7)].map((_, i) => lagos(15, i)))    // Tue 00:30 – 06:30
+      .every((t) => onRosterAt(both, times, t).on === true));
+  check("...and covers nothing before it starts",
+    [...Array(7)].map((_, i) => lagos(14, i))               // Mon 00:30 – 06:30
+      .every((t) => onRosterAt(both, times, t).on === false));
+
+  check("the day's shifts are listed in the order it runs them",
+    shiftsOn(both, at("2026-09-14T10:00:00Z")).join() === "morning,night");
+  check("an off day lists nothing", shiftsOn(both, at("2026-09-15T10:00:00Z")).length === 0);
+  check("shiftsOn survives an absent roster", shiftsOn(undefined, new Date()).length === 0);
 }
 
 
