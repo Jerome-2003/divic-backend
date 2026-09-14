@@ -412,6 +412,33 @@ console.log("\n=== reports still owed ===");
 
   check("nothing is outstanding once everything is taken",
     periodsDue("2026-09-13", fresh).length === 0);
+
+  // ---- a system that went live this month owes nothing yet ----
+  // The first morning after deployment must not open with a demand for last
+  // year's accounts. Being asked for figures that cannot exist is how people
+  // learn to dismiss the prompt, which costs the one month it is there for.
+  const justLive = periodsDue("2026-09-13", [], "2026-09-01");
+  check("a hotel live this month is owed nothing at all", justLive.length === 0);
+
+  const liveInJune = periodsDue("2026-09-13", [], "2026-06-20");
+  check("a hotel live in June is not asked for last year",
+    liveInJune.every((d) => d.kind !== "year"));
+  check("...but is asked for every closed month it has been running",
+    liveInJune.map((d) => d.period).join() === "2026-08,2026-07,2026-06");
+
+  // June is the month it went live: a part-month of real figures is still
+  // worth filing, so the month it started in counts.
+  check("the month it went live is itself due",
+    periodsDue("2026-07-02", [], "2026-06-20").some((d) => d.period === "2026-06"));
+
+  const liveLastYear = periodsDue("2026-01-05", [], "2025-11-01");
+  check("a hotel live last November is asked for that year",
+    liveLastYear.some((d) => d.kind === "year" && d.period === "2025"));
+  check("...and only for the months it existed for",
+    liveLastYear.filter((d) => d.kind === "month").map((d) => d.period).join() === "2025-12,2025-11");
+
+  check("no start date means the old behaviour, unchanged",
+    periodsDue("2026-09-13", [], null).length === fresh.length);
 }
 
 
