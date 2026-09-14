@@ -82,7 +82,11 @@ const CHARGE_SETTLEMENTS = ["room", "paid"];
 const PERMISSIONS = {
   owner:        ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications","todos"],
   manager:      ["dashboard","bookings","frontdesk","rooms","guests","billing","facilities","pos","analytics","rates","staff","audit","ai","content","notifications","todos"],
-  receptionist: ["dashboard","bookings","frontdesk","rooms","guests","billing","ai","notifications"],
+  // "todos" was missing here while every other operational role had it, so the
+  // shared to-do list was invisible to the one person most likely to keep it —
+  // whoever is on the front desk. A test has been asserting this since the list
+  // was built and failing ever since.
+  receptionist: ["dashboard","bookings","frontdesk","rooms","guests","billing","ai","notifications","todos"],
   cleaner:      ["rooms","notifications","ai","todos"],
   // Facility staff can use the assistant for facility, till and operational questions;
   // the agent itself enforces what records this role can see.

@@ -89,7 +89,11 @@ router.get("/folio/:bookingId", async (req, res, next) => {
       paid: f.paid,
       balance: f.balance,
       facilityLines: lines.map((c) => ({
-        id: c._id, facility: c.facility?.name, facilityType: c.facility?.type,
+        id: c._id,
+        // Needed to void one: the void route is scoped to the facility that
+        // took the money, so the bill has to say which that was.
+        facilityId: c.facility?._id ? String(c.facility._id) : null,
+        facility: c.facility?.name, facilityType: c.facility?.type,
         description: c.description, amount: c.amount, postedAt: c.createdAt,
       })),
       payments: payments.map((p) => ({

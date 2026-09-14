@@ -52,7 +52,8 @@ const PREPARED_PROMPTS = [
   { id:"cleaning_rooms", label:"Which rooms are being cleaned?", group:"Rooms", roles:HOUSEKEEPING, scope:"location", context:"roomStatusDetail:cleaning", instruction:"List rooms currently being cleaned." },
   { id:"maintenance_rooms", label:"Which rooms are under maintenance?", group:"Rooms", roles:HOUSEKEEPING, scope:"location", context:"roomStatusDetail:maintenance", instruction:"List rooms currently under maintenance." },
   { id:"occupied_rooms", label:"Which rooms are occupied?", group:"Rooms", roles:HOUSEKEEPING, scope:"location", context:"roomStatusDetail:occupied", instruction:"List occupied rooms." },
-  { id:"current_rates", label:"What are our current room rates?", group:"Rooms", roles:FRONTDESK, scope:"location", context:"currentRates", instruction:"Show current nightly rates by room type." },
+  { id:"current_rates", label:"What are our current room rates?", group:"Rooms", roles:FRONTDESK, scope:"location", context:"currentRates", instruction:"Show current nightly rates by room type, and say plainly which offers come off them — a guest whose stay qualifies pays less than the rate card." },
+  { id:"offers_running", label:"What offers are running?", group:"Rooms", roles:FRONTDESK, scope:"location", context:"currentRates", instruction:"List the offers currently running, what each takes off, which rooms and dates it covers, and note that a stay qualifying for more than one gets all of them." },
   { id:"availability_by_type", label:"What room types are available for a stay?", group:"Rooms", roles:FRONTDESK, scope:"location", context:"none", instruction:"Use dates from the user's question to return available room counts by type." },
   { id:"upcoming_bookings", label:"What bookings are coming up?", group:"Daily running", roles:FRONTDESK, scope:"location", context:"upcomingBookings", instruction:"List confirmed and in-house bookings starting in the next 7 days." },
 
@@ -60,6 +61,19 @@ const PREPARED_PROMPTS = [
   { id:"facility_status", label:"Which facilities are open?", group:"Facilities", roles:FACILITY, scope:"location", context:"facilityStatus", instruction:"List facilities, current status, hours and status notes." },
   { id:"facility_sales_today", label:"How much did the facilities sell today?", group:"Facilities", roles:FACILITY, scope:"location", context:"facilityRevenueToday", instruction:"Show today's facility sales by facility." },
   { id:"facility_charges_today", label:"What charges were posted at a facility today?", group:"Facilities", roles:FACILITY, scope:"location", context:"facilityRevenueToday", instruction:"Show today's facility charge counts and totals." },
+
+  // The tills, the pool and the gym. The assistant could see facility takings
+  // as a lump of charges and nothing about what was actually sold or to whom.
+  { id:"bar_menu", label:"What does the bar sell?", group:"Facilities", roles:FACILITY, scope:"location", context:"barMenus", instruction:"List each bar and restaurant's menu with prices, grouped by category, and flag anything marked unavailable." },
+  { id:"open_tables", label:"Which tables are open right now?", group:"Facilities", roles:FACILITY, scope:"location", context:"barFloor", instruction:"List open tables with the facility, table name, room and guest where known, how many items are on it and what it is worth." },
+  { id:"bar_tonight", label:"How did the bar do today?", group:"Facilities", roles:FACILITY, scope:"location", context:"barFloor", instruction:"Give what was settled and taken today, and what sold most by quantity." },
+  { id:"pool_gym_today", label:"Who used the pool or gym today?", group:"Facilities", roles:FACILITY, scope:"location", context:"facilityVisitors", instruction:"List today's pool and gym visits with who, how many people, whether it went on a room or was paid, and who is still inside." },
+  { id:"gym_members", label:"Who holds a gym membership?", group:"Facilities", roles:FACILITY, scope:"location", context:"facilityVisitors", instruction:"List gym members with their plan, the dates it runs, and whether it is current or lapsed." },
+
+  // Shifts
+  { id:"who_is_on_shift", label:"Who is on shift right now?", group:"Staff", roles:MANAGERS, scope:"location", context:"shiftBoard", instruction:"Say who is signed on now, who the roster says is due, and name anyone in one list but not the other." },
+  { id:"shift_gaps", label:"Is anyone missing from their shift?", group:"Staff", roles:MANAGERS, scope:"location", context:"shiftBoard", instruction:"Name anyone due on shift who has not signed in, and anyone signed in who is not rostered. Say plainly if there is nobody in either list." },
+  { id:"shift_times", label:"When do the shifts change over?", group:"Staff", roles:ALL, scope:"location", context:"shiftBoard", instruction:"Give the morning and night shift hours at this property and note that the night shift runs through midnight." },
 
   // Website / requests / content
   { id:"request_summary", label:"What is the status of website requests?", group:"Website", roles:FRONTDESK, scope:"location", context:"requestSummary", instruction:"Count pending, accepted, declined and expired booking requests." },
