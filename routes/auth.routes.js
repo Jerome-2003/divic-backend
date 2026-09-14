@@ -6,7 +6,6 @@ const { requireAuth } = require("../middleware/auth");
 const { PERMISSIONS } = require("../utils/constants");
 const { logAction } = require("../services/audit");
 const { startShift, endShift, openShiftFor } = require("../services/shifts");
-const { onRosterAt } = require("../services/roster");
 
 const loginLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -85,8 +84,7 @@ router.post("/login", loginLimiter, async (req, res, next) => {
     // Signing in is the one moment the system can be sure somebody has
     // arrived, so it is where a shift opens. Idempotent — signing in again
     // mid-morning is the same shift, not a second one.
-    const { shift, opened } = await startShift(user);
-    const roster = onRosterAt(user.shifts, new Date());
+    const { shift, opened, roster } = await startShift(user);
 
     logAction({ user: user.toSafeJSON(), headers: req.headers, ip: req.ip },
       {
