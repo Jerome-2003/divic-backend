@@ -543,6 +543,66 @@ router.post("/:facilityId/tabs/:tabId/settle", requireModule("pos"), requireAssi
 });
 
 /**
+ * POST /api/facilities/:facilityId/tabs/:tabId/discard  { reason? }
+ *
+ * Closing a table that should never have been open: a name typed wrong, a
+ * party that walked out before ordering, a second tab opened for a group that
+ * already had one. Until now the only ways out of an open table were to settle
+ * it — which takes money for drinks nobody had — or to leave it open all night
+ * cluttering the list.
+ *
+ * Open tables only. A settled one has money against it and is undone by voiding
+ * instead, which reverses the charge rather than deleting the record of it.
+ *
+ * Whoever works the till may do this, and not because it is trivial: they can
+ * already empty a table line by line and leave it at zero, so demanding a
+ * manager for the last step would stop nothing and only teach people the
+ * workaround. What it does instead is leave a trace — a discarded table is
+ * logged with who discarded it, what was on it and what it was worth, which is
+ * more than removing the lines one at a time has ever recorded. A table with
+ * anything on it has to say why.
+ */
+router.post("/:facilityId/tabs/:tabId/discard", requireModule("pos"), requireAssignedFacility(), requireOperational("facility"), async (req, res, next) => {
+  try {
+    const tab = await Tab.findOne({ _id: req.params.tabId, facility: req.facility._id });
+    if (!tab) return res.status(404).json({ error: "That table order does not exist." });
+    if (tab.status === "settled") {
+      return res.status(409).json({
+        error: "That order has been settled, so money has changed hands. A manager can void it instead.",
+      });
+    }
+
+    const worth = tab.computeTotal();
+    const reason = clean(req.body?.reason, 240);
+    if (tab.lines.length && reason.length < 4) {
+      return res.status(400).json({
+        error: "Say why a table with " + tab.lines.length + " item" +
+          (tab.lines.length === 1 ? "" : "s") + " on it is being discarded — it goes in the activity log.",
+      });
+    }
+
+    const before = tab.toObject();
+    await tab.deleteOne();
+
+    logAction(req, {
+      action: (req.isOverride ? "OVERRIDE — " : "") +
+        "Discarded the unsettled table " + before.tableName + " at " + req.facility.name +
+        (before.lines.length
+          ? " with " + before.lines.length + " item" + (before.lines.length === 1 ? "" : "s") +
+            " worth " + worth + " naira — " + reason
+          : ", which had nothing on it") +
+        (req.isOverride ? " (" + req.body.overrideReason + ")" : ""),
+      entity: "Tab", entityId: before._id, location: req.facility.location, before,
+    });
+    req.app.get("io")?.to("loc:" + req.facility.location).emit("tab:discarded", {
+      facility: req.facility.name, tableName: before.tableName,
+    });
+
+    res.json({ ok: true, tableName: before.tableName, items: before.lines.length, worth });
+  } catch (e) { next(e); }
+});
+
+/**
  * POST /api/facilities/:facilityId/tabs/:tabId/void  { reason }
  *
  * Undoing a bill after the money was taken. A manager's decision, never the
