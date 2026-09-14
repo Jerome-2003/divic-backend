@@ -64,6 +64,9 @@ router.post("/login", loginLimiter, async (req, res, next) => {
       });
     }
 
+    if (user.removedAt) {
+      return res.status(403).json({ error: "This account has been closed. Speak to your manager." });
+    }
     if (!user.active) {
       return res.status(403).json({ error: "This account has been deactivated. Speak to your manager." });
     }
