@@ -4,6 +4,10 @@ const Facility = require("../models/Facility");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { logAction } = require("../services/audit");
 const { ROLES } = require("../utils/constants");
+const Shift = require("../models/Shift");
+const { badRoster, cleanRoster, onRosterAt } = require("../services/roster");
+const { endShift } = require("../services/shifts");
+const { dayStart, dayEnd, today, shiftDays } = require("../utils/day");
 
 router.use(requireAuth, requireRole("manager", "owner"));
 
@@ -43,19 +47,37 @@ router.get("/", async (req, res, next) => {
     // A manager cannot see or touch owner accounts.
     const filter = req.user.role === "owner" ? {} : { role: { $ne: "owner" } };
     const users = await User.find(filter).sort({ name: 1 });
-    res.json(users.map((u) => ({
-      ...u.toSafeJSON(),
-      lastLoginAt: u.lastLoginAt,
-      failedLoginAttempts: u.failedLoginAttempts || 0,
-      loginLocked: Boolean(u.loginLockedAt),
-      loginLockedAt: u.loginLockedAt || null,
-    })));
+
+    // Who is actually signed on, in one query rather than one per person.
+    const open = await Shift.find({
+      user: { $in: users.map((u) => u._id) }, endedAt: { $exists: false },
+    }).select("user startedAt wasRostered").lean();
+    const openBy = Object.fromEntries(open.map((s) => [String(s.user), s]));
+
+    const now = new Date();
+    res.json(users.map((u) => {
+      const shift = openBy[String(u._id)];
+      const roster = onRosterAt(u.shifts, now);
+      return {
+        ...u.toSafeJSON(),
+        lastLoginAt: u.lastLoginAt,
+        failedLoginAttempts: u.failedLoginAttempts || 0,
+        loginLocked: Boolean(u.loginLockedAt),
+        loginLockedAt: u.loginLockedAt || null,
+        // Two different questions, and the gap between them is the point.
+        onShift: Boolean(shift),
+        shiftStartedAt: shift?.startedAt || null,
+        shiftMinutes: shift ? Math.round((now - new Date(shift.startedAt)) / 60000) : 0,
+        dueOn: roster.on,
+        dueWindow: roster.shift ? roster.shift.startsAt + "–" + roster.shift.endsAt : null,
+      };
+    }));
   } catch (e) { next(e); }
 });
 
 router.post("/", async (req, res, next) => {
   try {
-    const { name, username, password, role, location, phone, assignedFacilities } = req.body;
+    const { name, username, password, role, location, phone, assignedFacilities, shifts } = req.body;
     if (!name || !username || !password) {
       return res.status(400).json({ error: "A new account needs a name, username and starting password." });
     }
@@ -79,14 +101,22 @@ router.post("/", async (req, res, next) => {
       return res.status(400).json({ error: "Only facility staff can be assigned to facilities." });
     }
 
+    const rosterError = badRoster(shifts);
+    if (rosterError) return res.status(400).json({ error: rosterError });
+
     const user = new User({
       name, username: username.toLowerCase().trim(), role, location, phone,
       assignedFacilities: assigned,
+      shifts: cleanRoster(shifts),
     });
     await user.setPassword(password);
     await user.save();
 
-    logAction(req, { action: "Created a " + role + " account for " + name, entity: "User", entityId: user._id });
+    logAction(req, {
+      action: "Created a " + role + " account for " + name +
+        (user.shifts.length ? " on a " + user.shifts.length + "-day roster" : " with no shifts set"),
+      entity: "User", entityId: user._id,
+    });
     res.status(201).json(user.toSafeJSON());
   } catch (e) { next(e); }
 });
@@ -137,9 +167,14 @@ router.patch("/:id", async (req, res, next) => {
       return res.status(403).json({ error: "Only the owner can change an owner account." });
     }
 
-    const { name, role, location, phone, password, active, assignedFacilities } = req.body;
+    const { name, role, location, phone, password, active, assignedFacilities, shifts } = req.body;
     if (name) user.name = name;
     if (phone !== undefined) user.phone = phone;
+    if (shifts !== undefined) {
+      const rosterError = badRoster(shifts);
+      if (rosterError) return res.status(400).json({ error: rosterError });
+      user.shifts = cleanRoster(shifts);
+    }
     if (role) {
       if (req.user.role === "manager" && !["receptionist", "cleaner", "facility"].includes(role)) {
         return res.status(403).json({ error: "Only the owner can assign manager or owner roles." });
@@ -197,6 +232,69 @@ router.patch("/:id", async (req, res, next) => {
 
     logAction(req, { action: "Updated the account for " + user.name, entity: "User", entityId: user._id });
     res.json(user.toSafeJSON());
+  } catch (e) { next(e); }
+});
+
+/**
+ * POST /api/staff/:id/end-shift — closing a shift somebody left running.
+ *
+ * People forget. A bartender who shuts the till and goes home at two in the
+ * morning without signing out reads as still on duty the next afternoon, which
+ * makes the whole board useless. Ending it for them is recorded as the
+ * manager's act, not theirs.
+ */
+router.post("/:id/end-shift", async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "That account does not exist." });
+    if (req.user.role === "manager" && user.role === "owner") {
+      return res.status(403).json({ error: "Only the owner can end an owner's shift." });
+    }
+
+    const shift = await endShift(user._id, req.user.id);
+    if (!shift) return res.status(409).json({ error: user.name + " is not on shift." });
+
+    const minutes = Math.round((shift.endedAt - shift.startedAt) / 60000);
+    logAction(req, {
+      action: "Ended " + user.name + "'s shift for them, after " +
+        Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m",
+      entity: "Shift", entityId: shift._id, location: shift.location,
+    });
+    res.json({ ok: true, minutes });
+  } catch (e) { next(e); }
+});
+
+/**
+ * GET /api/staff/shifts?from=&to= — shifts worked, for the activity log.
+ *
+ * Shown beside what people did rather than as its own screen: "who was here"
+ * is the first question asked about any entry in that log.
+ */
+router.get("/shifts", async (req, res, next) => {
+  try {
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : today();
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : shiftDays(to, -6);
+
+    const rows = await Shift.find({ startedAt: { $gte: dayStart(from), $lt: dayEnd(to) } })
+      .populate("user", "name role location")
+      .populate("endedBy", "name")
+      .sort({ startedAt: -1 }).limit(300).lean();
+
+    const now = new Date();
+    res.json(rows.map((s) => ({
+      id: s._id,
+      name: s.user?.name || "A former account",
+      role: s.user?.role || null,
+      location: s.location,
+      startedAt: s.startedAt,
+      endedAt: s.endedAt || null,
+      open: !s.endedAt,
+      minutes: Math.round(((s.endedAt || now) - new Date(s.startedAt)) / 60000),
+      wasRostered: !!s.wasRostered,
+      rosteredWindow: s.rosteredStart ? s.rosteredStart + "–" + s.rosteredEnd : null,
+      // Only set when somebody else closed it, which is worth seeing.
+      endedByOther: s.endedBy && String(s.endedBy._id) !== String(s.user?._id) ? s.endedBy.name : null,
+    })));
   } catch (e) { next(e); }
 });
 
