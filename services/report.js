@@ -13,12 +13,13 @@ const MONTHS = ["January","February","March","April","May","June",
 
 const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 
+// Calendar arithmetic over plain dates, shared with everything else that does
+// it — three private copies of "the day after this one" is three chances for
+// one of them to be subtly different.
+const { shiftDays, daysBetween } = require("../utils/day");
+
 /** The day after this one, so a range the user gave inclusively ends correctly. */
-function dayAfter(iso) {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
+const dayAfter = (iso) => shiftDays(iso, 1);
 
 /** A date as a person writes it — "3 September 2026". */
 function prettyDay(iso) {
@@ -79,9 +80,7 @@ function windowFor(query) {
 }
 
 /** How many nights the window spans — the denominator for occupancy. */
-function nightsIn(from, to) {
-  return Math.round((new Date(to + "T00:00:00Z") - new Date(from + "T00:00:00Z")) / 86400000);
-}
+const nightsIn = (from, to) => daysBetween(from, to);
 
 
 /** Adds two property reports into the collective one. */

@@ -11,7 +11,8 @@ const { FACILITY_STATUSES, CHARGE_SETTLEMENTS } = require("../utils/constants");
 
 router.use(requireAuth);
 
-const today = () => new Date().toISOString().slice(0, 10);
+// The hotel's day, not UTC's — see utils/day.js.
+const { today, dayStart } = require("../utils/day");
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "");
 const clean = (s, max = 200) => String(s || "").trim().slice(0, max);
 
@@ -231,7 +232,7 @@ router.get("/:facilityId/charges", requireModule("pos"), requireAssignedFacility
   try {
     const date = req.query.date ? clean(req.query.date, 10) : today();
     if (!isDate(date)) return res.status(400).json({ error: "Send the date as YYYY-MM-DD." });
-    const from = new Date(date + "T00:00:00.000Z");
+    const from = dayStart(date);
     const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
 
     const charges = await Charge.find({

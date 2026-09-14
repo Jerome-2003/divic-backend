@@ -23,12 +23,9 @@ const { LOCATIONS } = require("../utils/constants");
 const { findAvailableRooms, nightsBetween } = require("./availability");
 const { foliosFor } = require("./folio");
 
-const today = () => new Date().toISOString().slice(0, 10);
-const shift = (iso, n) => {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
+// The hotel's day, not UTC's. The assistant answers "how did today go", and
+// an hour of that answer was about yesterday.
+const { today, dayStart, shiftDays: shift } = require("../utils/day");
 
 async function ratesFor(location) {
   const doc = await Rate.findOne({ location }).lean();
@@ -122,7 +119,7 @@ async function outstandingBalances(location) {
 /** Facility takings over a period. Never mixed into ADR or RevPAR. */
 async function facilityRevenue(location, from = shift(today(), -30)) {
   const rows = await Charge.aggregate([
-    { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
+    { $match: { location, voided: false, createdAt: { $gte: dayStart(from) } } },
     { $group: {
         _id: { facility: "$facility", settlement: "$settlement" },
         total: { $sum: "$amount" }, count: { $sum: 1 },
@@ -307,7 +304,7 @@ async function forwardOccupancy(location) {
 
 
 async function todaySales(location) {
-  const start = new Date(today() + "T00:00:00.000Z");
+  const start = dayStart(today());
   const payments = await Payment.find({ location, voided: false, createdAt: { $gte: start } })
     .populate("facility", "name").lean();
   const byMethod = {};
@@ -327,7 +324,7 @@ async function todaySales(location) {
 }
 
 async function facilityRevenueToday(location) {
-  const start = new Date(today() + "T00:00:00.000Z");
+  const start = dayStart(today());
   const rows = await Charge.aggregate([
     { $match: { location, voided: false, createdAt: { $gte: start } } },
     { $group: { _id: { facility: "$facility", settlement: "$settlement" }, total: { $sum: "$amount" }, count: { $sum: 1 } } },
@@ -358,7 +355,7 @@ async function recentPayments(location) {
 async function paymentFees(location) {
   const from = shift(today(), -30);
   const rows = await Payment.aggregate([
-    { $match: { location, voided: false, createdAt: { $gte: new Date(from + "T00:00:00.000Z") } } },
+    { $match: { location, voided: false, createdAt: { $gte: dayStart(from) } } },
     { $group: { _id: "$method", fees: { $sum: { $ifNull: ["$feeAmount", 0] } }, gross: { $sum: "$amount" }, net: { $sum: { $ifNull: ["$netAmount", "$amount"] } }, count: { $sum: 1 } } },
   ]);
   return { property: LOCATIONS[location].name, period: { from, to: today(), days: 30 }, byMethod: rows,
@@ -408,7 +405,7 @@ async function bookingStatusesToday(location) {
   const t = today();
   const rows = await Booking.find({ location, $or: [
     { status: "no-show" },
-    { status: "cancelled", cancelledAt: { $gte: new Date(t + "T00:00:00.000Z") } },
+    { status: "cancelled", cancelledAt: { $gte: dayStart(t) } },
   ] }).populate("guest", "name").sort({ updatedAt: -1 }).limit(50).lean();
   return { property: LOCATIONS[location].name, date: t, rows: rows.map(b => ({
     ref: b.ref, guest: b.guest?.name, room: b.roomNumber, type: b.roomType,
